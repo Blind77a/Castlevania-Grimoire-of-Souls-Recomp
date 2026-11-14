@@ -16,9 +16,15 @@ Same idea as [Unleashed Recompiled](https://github.com/hedge-dev/UnleashedRecomp
   account and no network
 - Direct3D 11, with the post-processing and the SPFX particle effects
 - Xbox and PlayStation controllers, keyboard and mouse. Mouse buttons can be
-  bound in the game's own keyboard options
+  bound in the game's own keyboard options. On Windows 10 and 11, Xbox pads
+  show the Xbox button icons
 - Frame rate cap, V-Sync, fullscreen / borderless / windowed and resolution in
   `gosr.ini`
+- Quit Game on the in-game menu, beside Return to Title. It saves, then asks
+  before it quits
+- The Apple Arcade movie and the Konami logo are skipped by default
+  (`skip_intro=1`). The title menu stays, and Continue is usable before the
+  fade-in and the logo shine. `skip_intro=0` plays the logos
 - Every language the game shipped with
 - A debug menu on F8: gold, gems, every item by name, unlock everything, open
   every quest and banner, skip the tutorial, invincibility, damage multiplier.
@@ -65,6 +71,7 @@ effects. Things I know about:
 
 - An effect can show up a few frames late the first time you see it while its
   shaders get converted. After that they're cached.
+- Depth-tested flames stay in front of the surface they sit on.
 - The game was made for 60 fps. Higher caps work, but if something feels too
   fast, go back to 60.
 
