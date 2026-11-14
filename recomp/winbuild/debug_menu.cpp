@@ -1203,6 +1203,44 @@ namespace
         }
     }
 
+    // Start (gsJoystick.ASSIGN.PAUSE) on the hub opens the menu, as its Menu
+    // button does (homeUi.OnButtonTap(ButtonActionType.MenuTop)). Only when the
+    // hub is the one screen showing, so not over a popup or the hub tutorial.
+    void HubStartOpensMenu()
+    {
+        try
+        {
+            int32_t pause = 18;
+            if (!Bool(Call(Singleton("gsJoystick"), "GetKeyDown", &pause)))
+                return;
+            if (!GetField<bool>(Singleton("bsSceneManager"), "_isSceneActive") ||
+                Bool(Call(Singleton("cmnPopupManager"), "get_isActivePopup")))
+                return;
+            std::vector<std::string> shown = ShownUis();
+            if (shown.size() != 1 || shown[0] != "homeUi")
+                return;
+            Il2CppObject* hub = nullptr;
+            ForEachCachedUi([&](Il2CppObject* u) {
+                if (!strcmp(il2cpp_class_get_name(il2cpp_object_get_class(u)), "homeUi") && Active(u))
+                    hub = u;
+            });
+            if (!hub)
+                return;
+            int32_t menuTop = 7;
+            Call(hub, "OnButtonTap", &menuTop);
+            fprintf(stderr, "GoSRecomp: Start on the hub opened the menu\n");
+        }
+        catch (const Failure& f)
+        {
+            static std::string last;
+            if (last != f.what)
+            {
+                last = f.what;
+                fprintf(stderr, "GoSRecomp: Start on the hub: %s\n", f.what.c_str());
+            }
+        }
+    }
+
     // Controller report in the log (gosr_log.txt): the connected controller,
     // the type the game detected, and the first moves past half range of each
     // joystick axis, so a stick that does nothing can be traced to its axis.
@@ -1310,6 +1348,7 @@ namespace
         RegisterXInputLayout();
         ApplyControllerLayout();
         LogControllerInput();
+        HubStartOpensMenu();
         static int stateFrame = 0;
         if (stateFrame++ % 30 == 0)
         {
