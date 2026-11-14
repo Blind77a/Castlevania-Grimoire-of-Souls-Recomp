@@ -17,6 +17,7 @@
 #include <memory>
 #include <mutex>
 #include <regex>
+#include <set>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -652,6 +653,10 @@ namespace spfx::gl
                 size_t n = size_t(w) * h;
                 if (t.levels[l].size() < n * size_t(channels))
                     continue;
+                // Effect palettes are DDS strips (128x4, 4x128) stored B,G,R,A.
+                // Read as RGBA they come out blue, and the brazier is a flat glow
+                // instead of the warm flame. Square images are left alone.
+                const bool swapBR = channels == 4 && std::min(w, h) <= 4 && std::max(w, h) >= 32;
                 for (size_t i = 0; i < n; i++)
                 {
                     const uint8_t* s = src + i * size_t(channels);
@@ -673,7 +678,17 @@ namespace spfx::gl
                         break;
                     case 2: d[0] = d[1] = d[2] = s[0]; d[3] = s[1]; break;
                     case 3: d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = 255; break;
-                    default: memcpy(d, s, 4); break;
+                    default:
+                        if (swapBR)
+                        {
+                            d[0] = s[2];
+                            d[1] = s[1];
+                            d[2] = s[0];
+                            d[3] = s[3];
+                        }
+                        else
+                            memcpy(d, s, 4);
+                        break;
                     }
                 }
                 sd[l] = { dst, w * 4, 0 };
@@ -819,6 +834,9 @@ namespace spfx::gl
             }
         }
 
+        // programs whose vertex shader takes particle quads already in world space
+        std::set<uint32_t> g_particlePrograms;
+
         void ApplyFixedFunction(State& s)
         {
             {
@@ -875,14 +893,22 @@ namespace spfx::gl
                 // follows GL unless GOSR_SPFX_NOCULL is set.
                 static const bool noCull = GetEnvironmentVariableW(L"GOSR_SPFX_NOCULL", nullptr, 0) != 0;
                 D3D11_CULL_MODE cull = D3D11_CULL_NONE;
-                if (s.cull && !noCull)
+                // Particles (quads built in world space, the dash dust) are not culled:
+                // they can come out wound the other way here (mirrored with the
+                // character) and vanished. Meshes keep culling: their back faces
+                // (fog planes) must stay hidden.
+                const bool particle = g_particlePrograms.count(s.currentProgram) != 0;
+                if (s.cull && !noCull && !particle)
                     cull = s.cullFace == 0x0404 ? D3D11_CULL_FRONT : s.cullFace == 0x0405 ? D3D11_CULL_BACK : D3D11_CULL_NONE;
                 bool ccw = (s.frontFace == 0x0901) != g_flipCameraY;
                 // Depth-tested effects (the 1-2 purple torches, slide dust) sit on a
                 // surface. The original Metal device biases them toward the camera;
                 // the GL path has no glPolygonOffset, so they fail LESS and vanish.
-                // Closer is smaller with the compare the attacks already use.
-                uint32_t key = uint32_t(cull) | (ccw ? 16 : 0) | (s.depthTest ? 32 : 0);
+                // Closer is smaller with the compare the attacks already use; draws
+                // tested with GREATER/GEQUAL (the brazier flame) count closer as
+                // larger, so the bias flips or it pushes them behind their stand.
+                const bool greater = s.depthFunc == 0x0204 || s.depthFunc == 0x0206;
+                uint32_t key = uint32_t(cull) | (ccw ? 16 : 0) | (s.depthTest ? 32 : 0) | (greater ? 64 : 0);
                 static std::map<uint32_t, Com<ID3D11RasterizerState>> cache;
                 ID3D11RasterizerState* r = Cached(cache, key);
                 if (!r)
@@ -894,8 +920,8 @@ namespace spfx::gl
                     rd.DepthClipEnable = TRUE;
                     if (s.depthTest)
                     {
-                        rd.DepthBias = -10000;
-                        rd.SlopeScaledDepthBias = -2.0f;
+                        rd.DepthBias = greater ? 10000 : -10000;
+                        rd.SlopeScaledDepthBias = greater ? 2.0f : -2.0f;
                     }
                     g_device->CreateRasterizerState(&rd, cache[key].put());
                     r = cache[key].get();
@@ -976,6 +1002,33 @@ namespace spfx::gl
         int32_t loc = 0;
         for (auto it = std::sregex_iterator(p.vertexSource.begin(), p.vertexSource.end(), attr); it != std::sregex_iterator(); ++it)
             p.attribs[(*it)[1]] = loc++;
+        // Wall candles sit on the same plane as the sprite behind them, so the
+        // depth test rejects them. The shader already applies PolygonOffset;
+        // add a small clip-space nudge there. This does not read textures back
+        // (that stalled attacks) and does not change material alpha UVs (that
+        // shoved braziers off center and stopped damage).
+        {
+            const std::string from = "WorldViewProjectionPosition.z-=Bias*2.0;";
+            // The candle emitter sits about 10 units behind the holder. 0.01 of
+            // clip depth was not enough to clear the wall; 0.06 is, and the clamp
+            // keeps the quad from being depth-clipped out of the frame.
+            // gosr_DepthNudge.x is set per draw: 1 for LESS-tested candles, 0 for
+            // GREATER/GEQUAL draws, where this would move them away from the camera.
+            const std::string to =
+                "WorldViewProjectionPosition.z-=Bias*2.0+WorldViewProjectionPosition.w*0.06*gosr_DepthNudge.x;"
+                "WorldViewProjectionPosition.z=max(WorldViewProjectionPosition.z,WorldViewProjectionPosition.w*0.001);";
+            size_t pos = p.vertexSource.find(from);
+            size_t mainAt = p.vertexSource.find("void main");
+            if (pos != std::string::npos && mainAt != std::string::npos && mainAt < pos &&
+                (pos + from.size() >= p.vertexSource.size() || p.vertexSource[pos + from.size()] != '+'))
+            {
+                p.vertexSource.replace(pos, from.size(), to);
+                p.vertexSource.insert(mainAt, "uniform vec4 gosr_DepthNudge;\n");
+                static int noted = 0;
+                if (noted++ == 0)
+                    Log("wall flames: depth offset added in the effect vertex shader");
+            }
+        }
         p.uniforms.clear();
         p.uniformIndex.clear();
         p.locationElement.clear();
@@ -1007,6 +1060,51 @@ namespace spfx::gl
                 }
             }
         }
+        // The simple billboard reads the mask from red. The sharp candle puff
+        // keeps that mask in alpha and a flat cloud in red. Opaque-alpha masks
+        // (shape in red) stay on red, so other billboards keep their old look.
+        {
+            // A colored fire image keeps its reds and yellows. A flat mask stays
+            // white so the vertex color still tints smoke and the soft puffs.
+            const std::string mark = "vec4 TexColor = vec4(1.0, 1.0, 1.0, Alpha);";
+            const std::string markTo =
+                "float FlameSpread=max(CandleSample.r,max(CandleSample.g,CandleSample.b))-min(CandleSample.r,min(CandleSample.g,CandleSample.b));"
+                "vec4 TexColor=vec4(FlameSpread>0.12?CandleSample.rgb:vec3(1.0),Alpha);";
+            const std::string to2 =
+                "vec4 CandleSample=texture2D(g_SamplerColor, Interpolate_TexCoord);"
+                "float Alpha=CandleSample.a>0.97?CandleSample.r:CandleSample.a;";
+            const std::string to1 =
+                "vec4 CandleSample=texture(g_SamplerColor, Interpolate_TexCoord);"
+                "float Alpha=CandleSample.a>0.97?CandleSample.r:CandleSample.a;";
+            if (p.fragmentSource.find(mark) != std::string::npos && p.fragmentSource.find("CandleSample") == std::string::npos)
+            {
+                const std::string from2 = "float Alpha = texture2D(g_SamplerColor, Interpolate_TexCoord).r;";
+                const std::string from1 = "float Alpha = texture(g_SamplerColor, Interpolate_TexCoord).r;";
+                size_t pos = p.fragmentSource.find(from2);
+                const std::string* use = &to2;
+                size_t n = from2.size();
+                if (pos == std::string::npos)
+                {
+                    pos = p.fragmentSource.find(from1);
+                    use = &to1;
+                    n = from1.size();
+                }
+                if (pos != std::string::npos)
+                {
+                    p.fragmentSource.replace(pos, n, *use);
+                    size_t colorAt = p.fragmentSource.find(mark);
+                    if (colorAt != std::string::npos)
+                        p.fragmentSource.replace(colorAt, mark.size(), markTo);
+                    static int noted = 0;
+                    if (noted++ == 0)
+                        Log("wall flames: billboard keeps the fire color");
+                }
+            }
+        }
+        if (p.vertexSource.find("WorldP=vec4(IN_Position.xyz, 1.0);") != std::string::npos)
+            g_particlePrograms.insert(name);
+        else
+            g_particlePrograms.erase(name);
         p.linked = true;
         p.build = RequestBuild(name, p);  // start compiling now, ahead of the first draw
         static int dumps = 0;
@@ -1265,6 +1363,12 @@ namespace spfx::gl
         GpuProgram* g = Prepare(s.currentProgram, p);
         if (!g)
             return;
+
+        if (auto nudge = p.uniformIndex.find("gosr_DepthNudge"); nudge != p.uniformIndex.end())
+        {
+            const bool greater = s.depthFunc == 0x0204 || s.depthFunc == 0x0206;
+            p.uniforms[p.locationUniform[nudge->second]].values[0] = greater ? 0.0f : 1.0f;
+        }
 
         // constant buffers and textures
         ID3D11ShaderResourceView* vsSrv[16] = {}, * psSrv[16] = {};
