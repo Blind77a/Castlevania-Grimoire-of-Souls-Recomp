@@ -33,6 +33,7 @@
 namespace recomp
 {
     void ApplyDisplaySettings();  // display.cpp
+    void EnsureMenuQuitButton();  // menu_quit.cpp
     extern std::atomic<bool> g_invincible;        // battle_hooks.cpp
     extern std::atomic<int> g_damageDealtFactor;  // battle_hooks.cpp
 }
@@ -1301,6 +1302,7 @@ namespace
     void RunPending()
     {
         recomp::ApplyDisplaySettings();
+        recomp::EnsureMenuQuitButton();
         EnableSymbolImages();
         RegisterXInputLayout();
         ApplyControllerLayout();
