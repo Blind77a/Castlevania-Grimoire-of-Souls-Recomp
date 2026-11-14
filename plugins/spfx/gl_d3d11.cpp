@@ -556,7 +556,7 @@ namespace spfx::gl
             switch (internal)
             {
             case 0x1903: case 0x8229: channels = 1; return DXGI_FORMAT_R8_UNORM;   // RED, R8
-            case 0x1906: channels = 1; return DXGI_FORMAT_A8_UNORM;                // ALPHA
+            case 0x1906: channels = 1; return DXGI_FORMAT_R8G8B8A8_UNORM;          // ALPHA: .r and .a both hold it
             case 0x1909: channels = 1; return DXGI_FORMAT_R8G8B8A8_UNORM;          // LUMINANCE -> L,L,L,1
             case 0x190A: channels = 2; return DXGI_FORMAT_R8G8B8A8_UNORM;          // LUMINANCE_ALPHA
             case 0x1907: case 0x8051: channels = 3; return DXGI_FORMAT_R8G8B8A8_UNORM;  // RGB
@@ -658,7 +658,19 @@ namespace spfx::gl
                     uint8_t* d = dst + i * 4;
                     switch (channels)
                     {
-                    case 1: d[0] = d[1] = d[2] = s[0]; d[3] = 255; break;
+                    case 1:
+                        // GL_ALPHA samples as (0,0,0,A). The particle shaders also read .r as the mask.
+                        if (t.internalFormat == 0x1906)
+                        {
+                            d[0] = d[3] = s[0];
+                            d[1] = d[2] = 0;
+                        }
+                        else
+                        {
+                            d[0] = d[1] = d[2] = s[0];
+                            d[3] = 255;
+                        }
+                        break;
                     case 2: d[0] = d[1] = d[2] = s[0]; d[3] = s[1]; break;
                     case 3: d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = 255; break;
                     default: memcpy(d, s, 4); break;
@@ -866,7 +878,11 @@ namespace spfx::gl
                 if (s.cull && !noCull)
                     cull = s.cullFace == 0x0404 ? D3D11_CULL_FRONT : s.cullFace == 0x0405 ? D3D11_CULL_BACK : D3D11_CULL_NONE;
                 bool ccw = (s.frontFace == 0x0901) != g_flipCameraY;
-                uint32_t key = uint32_t(cull) | (ccw ? 16 : 0);
+                // Depth-tested effects (the 1-2 purple torches, slide dust) sit on a
+                // surface. The original Metal device biases them toward the camera;
+                // the GL path has no glPolygonOffset, so they fail LESS and vanish.
+                // Closer is smaller with the compare the attacks already use.
+                uint32_t key = uint32_t(cull) | (ccw ? 16 : 0) | (s.depthTest ? 32 : 0);
                 static std::map<uint32_t, Com<ID3D11RasterizerState>> cache;
                 ID3D11RasterizerState* r = Cached(cache, key);
                 if (!r)
@@ -876,6 +892,11 @@ namespace spfx::gl
                     rd.CullMode = cull;
                     rd.FrontCounterClockwise = ccw;
                     rd.DepthClipEnable = TRUE;
+                    if (s.depthTest)
+                    {
+                        rd.DepthBias = -10000;
+                        rd.SlopeScaledDepthBias = -2.0f;
+                    }
                     g_device->CreateRasterizerState(&rd, cache[key].put());
                     r = cache[key].get();
                 }
