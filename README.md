@@ -47,7 +47,7 @@ there. Leave a value empty to keep the game's own behavior.
 
 | Section | What |
 |---|---|
-| `[game]` | `language` for the very first start (empty follows your Windows language); after that, the game's options decide |
+| `[game]` | `language` for the very first start (empty follows your Windows language); after that, the game's options decide. `skip_intro=1` skips the Apple Arcade movie and the Konami logo; the title menu stays, and Continue is usable before the fade-in and logo shine |
 | `[display]` | `fps` (0 = no cap), `vsync` (empty: only where it gives 60 fps), `mode` (fullscreen, borderless, windowed), `width`, `height` |
 | `[controller]` | `layout=pc` (default), or `mac` for the tables the macOS build used. `dpad_move=0` stops the d-pad from moving your character. `xinput=0` if an Xbox controller misbehaves. `standard`: other controllers read by their standard buttons (1, default), for every controller (2) or off (0) |
 | `[effects]` | `flip_fix=1`: experimental fix for effects drawn upside down in some screens (off by default) |

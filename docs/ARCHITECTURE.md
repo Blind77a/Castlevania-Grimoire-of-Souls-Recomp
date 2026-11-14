@@ -52,6 +52,7 @@ Releases carry the result as binary patches (`tools/patch`): `Setup.bat` applies
 ## Windows extras
 
 - `display.cpp`: frame rate cap, vsync, window mode and size from `gosr.ini`, by wrapping the engine calls the game makes (`Application.targetFrameRate`, `QualitySettings.vSyncCount`).
+- `skip_intro.cpp`: `gosr.ini` `[game] skip_intro` skips the Apple Arcade movie and the Konami logo. The title menu stays, and Continue is usable before the fade-in and logo shine.
 - `mouse_keys.cpp`: mouse buttons answer for keys a PC keyboard lacks (F13-F15, Command), so they can be bound in the game's keyboard options; `battle_hooks.cpp` names them.
 - `debug_menu.cpp`: the F8 debug menu, the controller table switch, and the per-frame hook (on the game's resident `gs.Update`) that runs them on the main thread through the IL2CPP API.
 - `battle_hooks.cpp`: native hooks inside translated functions (recompiler `--hook`): invincibility and the damage factor, mouse button names, and controller axes 5-28 (the macOS build of `gsJoystick.IsTrigger` only reads axes 1-4; the Windows tables put a PlayStation right stick vertical and an Xbox d-pad there).

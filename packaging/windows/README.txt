@@ -14,6 +14,7 @@ again. Your save is kept (it is stored outside the game folder).
 
 SETTINGS (gosr.ini)
   [game]       language=    empty = your Windows language
+               skip_intro=1 skips the Apple Arcade movie and Konami logo; Continue is usable before the title fade and logo shine
   [display]    fps= vsync= mode= width= height=
   [controller] layout=pc    (mac = the macOS tables)
                dpad_move=0  the d-pad no longer moves your character

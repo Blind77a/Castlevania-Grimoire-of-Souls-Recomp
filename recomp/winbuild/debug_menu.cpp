@@ -34,6 +34,8 @@ namespace recomp
 {
     void ApplyDisplaySettings();  // display.cpp
     void EnsureMenuQuitButton();  // menu_quit.cpp
+    void SkipIntro();             // skip_intro.cpp
+    void InstallSkipIntro(uint64_t imageBase);
     extern std::atomic<bool> g_invincible;        // battle_hooks.cpp
     extern std::atomic<int> g_damageDealtFactor;  // battle_hooks.cpp
 }
@@ -1303,6 +1305,7 @@ namespace
     {
         recomp::ApplyDisplaySettings();
         recomp::EnsureMenuQuitButton();
+        recomp::SkipIntro();
         EnableSymbolImages();
         RegisterXInputLayout();
         ApplyControllerLayout();
@@ -1691,6 +1694,7 @@ namespace recomp
         auto* slot = reinterpret_cast<UpdateFn*>(imageBase + kGsUpdateSlot);
         g_origUpdate = *slot;
         *slot = HookedUpdate;
+        InstallSkipIntro(imageBase);
         if (!GetPrivateProfileIntW(L"debug", L"menu", 1, ini.c_str()))
             return;
         wchar_t key[32] = {};
