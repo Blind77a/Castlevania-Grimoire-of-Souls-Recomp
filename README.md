@@ -19,6 +19,7 @@ This fork adds the following on top of [BLSNCVS/Castlevania-Grimoire-of-Souls-Re
 - **Skip the startup logos.** `skip_intro=1` (the default) skips the Apple Arcade movie and the Konami logo. The title menu stays, and Continue is usable before the fade-in and the Castlevania logo shine. `skip_intro=0` plays the logos.
 - **Xbox button icons.** On Windows 10 and 11, Xbox pads show Xbox icons. The game's check was the macOS version test, so those pads used to show generic Button labels.
 - **Missing effects.** The dash, dodge and slide dust, enemy flame deaths and background flames show up again. Wall candles and torches keep their fire color and draw in front of the wall, and brazier flames sit in front of their stands.
+- **Chest glow and coins.** Opening a chest shows its golden flare again, and the coins dropped by defeated enemies render and bounce on screen.
 
 ## What's in it
 
