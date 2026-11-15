@@ -15,6 +15,7 @@ Same idea as [Unleashed Recompiled](https://github.com/hedge-dev/UnleashedRecomp
 This fork adds the following on top of [BLSNCVS/Castlevania-Grimoire-of-Souls-Recomp](https://github.com/BLSNCVS/Castlevania-Grimoire-of-Souls-Recomp) `main`.
 
 - **Start opens the menu.** On the hub, Start opens the options menu, the same one as the Menu button. It stays off while a popup or the hub tutorial is up.
+- **Start presses the button.** On screens where Start jumps to a button, like Start on the quest preparation screen, it now presses that button too, instead of only moving the cursor there. Greyed-out buttons stay unpressed.
 - **Quit Game.** The in-game menu has a Quit Game button beside Return to Title. It saves, then asks with the title screen's confirm dialog before it quits.
 - **Skip the startup logos.** `skip_intro=1` (the default) skips the Apple Arcade movie and the Konami logo. The title menu stays, and Continue is usable before the fade-in and the Castlevania logo shine. `skip_intro=0` plays the logos.
 - **Xbox button icons.** On Windows 10 and 11, Xbox pads show Xbox icons. The game's check was the macOS version test, so those pads used to show generic Button labels.
