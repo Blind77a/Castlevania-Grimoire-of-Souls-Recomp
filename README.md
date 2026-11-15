@@ -74,6 +74,9 @@ an older build, press Default once.
 
 ### Most responsive controls
 
+These settings are for Video Game Esoterica, and for anyone else who wants
+the controls as tight as they can get.
+
 By default the game waits for the screen (V-Sync) and lets Unity prepare 2
 frames ahead, which can add up to about 33 ms between a button press and seeing
 it. For the snappiest combat, set these under `[display]`:
