@@ -1206,29 +1206,31 @@ namespace
     // Start (gsJoystick.ASSIGN.PAUSE) on the hub opens the menu, as its Menu
     // button does (homeUi.OnButtonTap(ButtonActionType.MenuTop)). Only when the
     // hub is the one screen showing, so not over a popup or the hub tutorial.
-    void HubStartOpensMenu()
+    // Returns true when it opened the menu.
+    bool HubStartOpensMenu()
     {
         try
         {
             int32_t pause = 18;
             if (!Bool(Call(Singleton("gsJoystick"), "GetKeyDown", &pause)))
-                return;
+                return false;
             if (!GetField<bool>(Singleton("bsSceneManager"), "_isSceneActive") ||
                 Bool(Call(Singleton("cmnPopupManager"), "get_isActivePopup")))
-                return;
+                return false;
             std::vector<std::string> shown = ShownUis();
             if (shown.size() != 1 || shown[0] != "homeUi")
-                return;
+                return false;
             Il2CppObject* hub = nullptr;
             ForEachCachedUi([&](Il2CppObject* u) {
                 if (!strcmp(il2cpp_class_get_name(il2cpp_object_get_class(u)), "homeUi") && Active(u))
                     hub = u;
             });
             if (!hub)
-                return;
+                return false;
             int32_t menuTop = 7;
             Call(hub, "OnButtonTap", &menuTop);
             fprintf(stderr, "GoSRecomp: Start on the hub opened the menu\n");
+            return true;
         }
         catch (const Failure& f)
         {
@@ -1237,6 +1239,126 @@ namespace
             {
                 last = f.what;
                 fprintf(stderr, "GoSRecomp: Start on the hub: %s\n", f.what.c_str());
+            }
+        }
+        return false;
+    }
+
+    // A class from any loaded assembly, by namespace and name.
+    Il2CppClass* AnyClass(const char* ns, const char* name)
+    {
+        size_t n = 0;
+        const Il2CppAssembly** assemblies = il2cpp_domain_get_assemblies(il2cpp_domain_get(), &n);
+        for (size_t i = 0; i < n; i++)
+            if (Il2CppClass* k = il2cpp_class_from_name(il2cpp_assembly_get_image(assemblies[i]), ns, name))
+                return k;
+        throw Failure{ std::string("class ") + name + " not found" };
+    }
+
+    // Start presses the button it points at. Screens with a Start shortcut
+    // (the quest preparation screen's Start, among others) register that
+    // button in cmnCursorSelector.m_directFocusObject, and the game's
+    // UpdateDirectFocusControl only moves the cursor to it on Start. This
+    // submits it too, as A on it would, under the same conditions the game
+    // checks before it moves the cursor: control enabled and set up, a window
+    // registered, no input field focused, cursor moves allowed, not in free
+    // cursor (mouse) mode. Greyed-out buttons are left alone.
+    void StartPressesFocusButton()
+    {
+        try
+        {
+            int32_t pause = 18;
+            if (!Bool(Call(Singleton("gsJoystick"), "GetKeyDown", &pause)))
+                return;
+            if (!GetField<bool>(Singleton("bsSceneManager"), "_isSceneActive"))
+                return;
+
+            static Il2CppClass* selectorClass = GameClass("cmnCursorSelector");
+            static Il2CppClass* objectClass = AnyClass("UnityEngine", "Object");
+            static Il2CppClass* buttonClass = AnyClass("UnityEngine.UI", "Button");
+            static Il2CppClass* eventSystemClass = AnyClass("UnityEngine.EventSystems", "EventSystem");
+            static Il2CppClass* eventDataClass = AnyClass("UnityEngine.EventSystems", "BaseEventData");
+
+            void* findArgs[1] = { il2cpp_type_get_object(il2cpp_class_get_type(selectorClass)) };
+            auto* found = reinterpret_cast<Il2CppArray*>(Invoke(FindMethod(objectClass, "FindObjectsOfType", 1), nullptr, findArgs));
+            if (!found)
+                return;
+            auto** selectors = reinterpret_cast<Il2CppObject**>(reinterpret_cast<uint8_t*>(found) + kIl2CppSizeOfArray);
+            for (size_t s = 0; s < il2cpp_array_length(found); s++)
+            {
+                Il2CppObject* selector = selectors[s];
+                if (!selector || !Bool(Call(selector, "get_isActiveAndEnabled")))
+                    continue;
+                if (!GetField<bool>(selector, "m_isEnableControl") || !GetField<bool>(selector, "m_isSetUp") ||
+                    GetField<bool>(selector, "m_isInputFieldFocused") || GetField<bool>(selector, "m_isDisableCursorMove"))
+                    continue;
+                if (Il2CppObject* module = GetField<Il2CppObject*>(selector, "m_standaloneInputModule"))
+                    if (Bool(Call(module, "IsFreeCursorMode")))
+                        continue;
+                auto* focus = GetField<Il2CppArray*>(selector, "m_directFocusObject");
+                int32_t index = GetField<int32_t>(selector, "m_currentIndex");
+                if (!focus || index < 0 || uint32_t(index) >= il2cpp_array_length(focus))
+                    continue;
+                Il2CppObject* target =
+                    reinterpret_cast<Il2CppObject**>(reinterpret_cast<uint8_t*>(focus) + kIl2CppSizeOfArray)[index];
+                if (!target || !Bool(Call(target, "get_activeInHierarchy")))
+                    continue;
+
+                // GameObject.GetComponent(Type), not the (string) overload
+                static const MethodInfo* getComponent = [&]() -> const MethodInfo* {
+                    void* iter = nullptr;
+                    while (const MethodInfo* m = il2cpp_class_get_methods(il2cpp_object_get_class(target), &iter))
+                    {
+                        if (strcmp(il2cpp_method_get_name(m), "GetComponent") != 0 || il2cpp_method_get_param_count(m) != 1)
+                            continue;
+                        char* type = il2cpp_type_get_name(il2cpp_method_get_param(m, 0));
+                        bool isType = type && !strcmp(type, "System.Type");
+                        il2cpp_free(type);
+                        if (isType)
+                            return m;
+                    }
+                    return nullptr;
+                }();
+                if (!getComponent)
+                    throw Failure{ "GameObject.GetComponent(Type) not found" };
+
+                auto nameOf = [](Il2CppObject* obj) {
+                    std::string out;
+                    if (obj)
+                        for (wchar_t ch : Widen(reinterpret_cast<Il2CppString*>(Call(obj, "get_name"))))
+                            out += ch < 128 ? char(ch) : '?';
+                    return out;
+                };
+                std::string where;
+                for (const std::string& ui : ShownUis())
+                    where += (where.empty() ? "" : ", ") + ui;
+                Il2CppObject* parent = Call(Call(target, "get_transform"), "get_parent");
+                std::string label = nameOf(parent ? Call(parent, "get_gameObject") : nullptr) + "/" + nameOf(target);
+
+                void* typeArg[1] = { il2cpp_type_get_object(il2cpp_class_get_type(buttonClass)) };
+                Il2CppObject* button = Invoke(getComponent, target, typeArg);
+                if (!button)
+                {
+                    fprintf(stderr, "GoSRecomp: Start focus target \"%s\" is not a button [%s]\n", label.c_str(), where.c_str());
+                    return;
+                }
+                if (!Bool(Call(button, "IsInteractable")))
+                    return;
+                Il2CppObject* eventSystem = Invoke(FindMethod(eventSystemClass, "get_current", 0), nullptr, nullptr);
+                Il2CppObject* data = il2cpp_object_new(eventDataClass);
+                Call(data, ".ctor", eventSystem);
+                Call(button, "OnSubmit", data);
+                fprintf(stderr, "GoSRecomp: Start pressed \"%s\" [%s]\n", label.c_str(), where.c_str());
+                return;
+            }
+        }
+        catch (const Failure& f)
+        {
+            static std::string last;
+            if (last != f.what)
+            {
+                last = f.what;
+                fprintf(stderr, "GoSRecomp: Start press: %s\n", f.what.c_str());
             }
         }
     }
@@ -1348,7 +1470,8 @@ namespace
         RegisterXInputLayout();
         ApplyControllerLayout();
         LogControllerInput();
-        HubStartOpensMenu();
+        if (!HubStartOpensMenu())
+            StartPressesFocusButton();
         static int stateFrame = 0;
         if (stateFrame++ % 30 == 0)
         {
