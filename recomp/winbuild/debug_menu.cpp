@@ -34,6 +34,7 @@ namespace recomp
 {
     void ApplyDisplaySettings();  // display.cpp
     void EnsureMenuQuitButton();  // menu_quit.cpp
+    void InGameMenuAfterUpdate(); // ingame_menu.cpp
     void SkipIntro();             // skip_intro.cpp
     void InstallSkipIntro(uint64_t imageBase);
     extern std::atomic<bool> g_invincible;        // battle_hooks.cpp
@@ -54,6 +55,8 @@ namespace
     std::atomic<bool> g_pending{ false };
     std::atomic<bool> g_menuVisible{ false };
     std::wstring g_iniPath;
+    int g_hotkey = 0;          // 0: the debug menu is off
+    bool g_useWindow = false;  // [debug] window=1: the old separate window
 
     std::mutex g_statusLock;
     std::string g_status = "Ready. Load a save, then pick an action.";
@@ -668,6 +671,15 @@ namespace
 
     std::atomic<int> g_selectedItem{ -1 };
 
+    // Given one at a time: things owned once, and equipment (a weapon, sub-
+    // weapon or armor piece is one item each; give it again for copies to
+    // strengthen with). Materials, items, food and fragments take an amount.
+    bool IsSingleKind(int type)
+    {
+        return type == kCharacter || type == kAvatar || type == kAccessory || type == kJukebox || type == kWeapon ||
+               type == kSubWeapon || type == kProtector;
+    }
+
     std::string GiveSelectedItem()
     {
         ItemEntry e;
@@ -679,8 +691,7 @@ namespace
             e = g_items[size_t(i)];
         }
         Il2CppObject* save = SaveData();
-        // owned-once things take a count of 1
-        bool unique = e.type == kCharacter || e.type == kAvatar || e.type == kAccessory || e.type == kJukebox;
+        bool unique = IsSingleKind(e.type);
         int count = unique ? 1 : std::max(1, std::min(int(g_amount), 9999));
         bool ok = AddContents(save, e.type, e.id, count) != 0;
         Commit(save);
@@ -1505,6 +1516,8 @@ namespace
     {
         RunPending();
         g_origUpdate(self, method);
+        // after gsJoystick has read this frame's buttons
+        recomp::InGameMenuAfterUpdate();
     }
 
     void Queue(std::function<std::string()> action)
@@ -1864,6 +1877,112 @@ namespace recomp
         int hotkey = (key[0] == L'F' || key[0] == L'f') && key[1] ? VK_F1 + _wtoi(key + 1) - 1 : _wtoi(key);
         if (hotkey <= 0)
             hotkey = VK_F8;
-        CreateThread(nullptr, 0, MenuThread, reinterpret_cast<void*>(intptr_t(hotkey)), 0, nullptr);
+        g_hotkey = hotkey;
+        // The menu is drawn in the game (ingame_menu.cpp). window=1 brings back
+        // the old separate window on the same hotkey instead.
+        if (GetPrivateProfileIntW(L"debug", L"window", 0, ini.c_str()))
+        {
+            g_useWindow = true;
+            CreateThread(nullptr, 0, MenuThread, reinterpret_cast<void*>(intptr_t(hotkey)), 0, nullptr);
+        }
+    }
+
+    // ---- for the in-game menu (ingame_menu.cpp); main thread only
+
+    std::string Utf8(const std::wstring& w)
+    {
+        std::string s(w.size() * 3, '\0');
+        s.resize(size_t(WideCharToMultiByte(CP_UTF8, 0, w.c_str(), int(w.size()), s.data(), int(s.size()), nullptr, nullptr)));
+        return s;
+    }
+
+    bool DebugMenuEnabled() { return g_hotkey != 0 && !g_useWindow; }
+    int DebugMenuHotkey() { return g_hotkey; }
+    bool DebugMenuWarned() { return GetPrivateProfileIntW(L"debug", L"warned", 0, g_iniPath.c_str()) != 0; }
+    void SetDebugMenuWarned() { WritePrivateProfileStringW(L"debug", L"warned", L"1", g_iniPath.c_str()); }
+
+    size_t DebugActionCount() { return Buttons().size(); }
+    std::string DebugActionGroup(size_t i) { return Buttons()[i].group ? Utf8(Buttons()[i].group) : std::string(); }
+
+    // Writes the loaded save to its files, so a backup has the latest. False
+    // when no save is loaded (title screen): the files are current then.
+    bool SaveGameNow()
+    {
+        try
+        {
+            Commit(SaveData());
+            return true;
+        }
+        catch (const Failure&)
+        {
+            return false;
+        }
+    }
+
+    // Battle toggles are settings; everything else writes the save.
+    bool DebugActionChangesSave(size_t i) { return !Buttons()[i].immediate; }
+
+    std::string DebugActionLabel(size_t i)
+    {
+        const Button& b = Buttons()[i];
+        return Utf8(b.liveLabel ? b.liveLabel() : std::wstring(b.label));
+    }
+
+    std::string RunDebugAction(size_t i)
+    {
+        try
+        {
+            return Buttons()[i].action();
+        }
+        catch (const Failure& f)
+        {
+            return "Failed: " + f.what;
+        }
+    }
+
+    int DebugAmount() { return g_amount; }
+    void SetDebugAmount(int amount) { g_amount = amount; }
+
+    size_t DebugItemCount()
+    {
+        {
+            std::lock_guard<std::mutex> lock(g_itemsLock);
+            if (!g_items.empty())
+                return g_items.size();
+        }
+        try
+        {
+            LoadItemList();
+        }
+        catch (const Failure&)
+        {
+        }
+        std::lock_guard<std::mutex> lock(g_itemsLock);
+        return g_items.size();
+    }
+
+    std::string DebugItemLabel(size_t i)
+    {
+        std::lock_guard<std::mutex> lock(g_itemsLock);
+        return i < g_items.size() ? Utf8(g_items[i].label) : std::string();
+    }
+
+    bool DebugItemIsSingle(size_t i)
+    {
+        std::lock_guard<std::mutex> lock(g_itemsLock);
+        return i < g_items.size() && IsSingleKind(g_items[i].type);
+    }
+
+    std::string GiveDebugItem(size_t i)
+    {
+        g_selectedItem = int(i);
+        try
+        {
+            return GiveSelectedItem();
+        }
+        catch (const Failure& f)
+        {
+            return "Failed: " + f.what;
+        }
     }
 }
