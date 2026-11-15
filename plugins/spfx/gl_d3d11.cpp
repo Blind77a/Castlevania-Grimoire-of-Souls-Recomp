@@ -1340,6 +1340,11 @@ namespace spfx::gl
                 Log("camera target: %s%s", line.c_str(), flippedMatrix != intoTexture && FlipEnabled() ? " (flipped)" : "");
             }
         }
+        // A Y-flipped projection (Unity's convention for drawing into a texture)
+        // reverses every triangle's winding. The original GL plugin never sees
+        // such a matrix, so the front faces it culls by come out backwards: the
+        // one-sided rain curtain of stage 3 was culled as a back face.
+        g_flipCameraY = flippedMatrix;
         if (flippedMatrix == intoTexture || !FlipEnabled())
             return;
         for (int i : { 1, 5, 9, 13 })  // row 1
@@ -1347,7 +1352,7 @@ namespace spfx::gl
         g_replaying = true;
         SPFX_PLUGIN_SetDrawParameter(camera, p.data());
         g_replaying = false;
-        g_flipCameraY = true;
+        g_flipCameraY = !flippedMatrix;
     }
 
     void EndCameraDraw() { g_flipCameraY = false; }
