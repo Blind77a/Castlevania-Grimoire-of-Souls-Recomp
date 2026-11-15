@@ -7,11 +7,17 @@
 //   mode=       ; fullscreen, borderless or windowed. Empty: as Unity remembers it
 //   width=      ; window or screen size; empty: the monitor's
 //   height=
+//   refresh=    ; monitor refresh rate in Hz while the game runs, mode=fullscreen
+//                 only (exclusive fullscreen). Empty: the monitor's current one
+//   frame_queue= ; frames the CPU may run ahead of the screen (1-3). Empty:
+//                  Unity's own (2). 1 shows a button press up to a frame
+//                  (~16 ms at 60 fps) sooner, but slow frames show as hitches.
 //
 // The game sets its frame rate and vsync itself (bs.Awake, and vsync again
 // whenever it thinks the refresh rate changed); those engine calls are
 // wrapped so the configured values win. With vsync on, the monitor's refresh
 // rate is the cap: fps then only lowers it to a fraction of the refresh rate.
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
@@ -32,6 +38,8 @@ namespace
         int vsync = -1;  // -1 game's own
         int mode = -1;   // UnityEngine.FullScreenMode, -1 untouched
         int width = 0, height = 0;
+        int refresh = 0;     // Hz, exclusive fullscreen only; 0 the monitor's own
+        int frameQueue = 0;  // QualitySettings.maxQueuedFrames; 0 untouched
     };
 
     std::wstring IniPath()
@@ -74,6 +82,15 @@ namespace
                 r.mode = 3;  // Windowed
             r.width = _wtoi(ReadKey(ini, L"width").c_str());
             r.height = _wtoi(ReadKey(ini, L"height").c_str());
+            r.refresh = std::max(0, _wtoi(ReadKey(ini, L"refresh").c_str()));
+            if (r.refresh && r.mode != 0)
+            {
+                fprintf(stderr, "GoSRecomp: refresh=%d needs mode=fullscreen, ignored\n", r.refresh);
+                r.refresh = 0;
+            }
+            v = ReadKey(ini, L"frame_queue");
+            if (!v.empty() && iswdigit(v[0]))
+                r.frameQueue = std::min(3, std::max(1, _wtoi(v.c_str())));
             if (r.fps != -2 || r.vsync != -1 || r.mode != -1)
                 fprintf(stderr, "GoSRecomp: display fps %d vsync %d mode %d size %dx%d\n", r.fps, r.vsync, r.mode, r.width, r.height);
             return r;
@@ -83,6 +100,8 @@ namespace
 
     int RefreshRate()
     {
+        if (Config().refresh)  // what the monitor runs at once the game has switched it
+            return Config().refresh;
         DEVMODEW dm = { sizeof(dm) };
         if (EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency > 1)
             return int(dm.dmDisplayFrequency);
@@ -149,10 +168,46 @@ namespace recomp
         return original;
     }
 
+    // How many frames Unity lets the CPU queue ahead of the GPU and screen.
+    // Each queued frame is a frame between reading the pad and showing the
+    // result. Checked about once a second, in case anything resets it.
+    void ApplyFrameQueue()
+    {
+        if (!Config().frameQueue)
+            return;
+        static int frame = 0;
+        if (frame++ % 60 != 0)
+            return;
+        using Get = int32_t (*)();
+        using Set = void (*)(int32_t);
+        auto resolve = [](const char* plain, const char* typed) {
+            void* f = reinterpret_cast<void*>(il2cpp_resolve_icall(plain));
+            return f ? f : reinterpret_cast<void*>(il2cpp_resolve_icall(typed));
+        };
+        static auto get = reinterpret_cast<Get>(resolve("UnityEngine.QualitySettings::get_maxQueuedFrames",
+                                                        "UnityEngine.QualitySettings::get_maxQueuedFrames()"));
+        static auto set = reinterpret_cast<Set>(resolve("UnityEngine.QualitySettings::set_maxQueuedFrames",
+                                                        "UnityEngine.QualitySettings::set_maxQueuedFrames(System.Int32)"));
+        static bool reported = false;
+        if (!get || !set)
+        {
+            if (!reported)
+                fprintf(stderr, "GoSRecomp: QualitySettings.maxQueuedFrames not available\n");
+            reported = true;
+            return;
+        }
+        int want = Config().frameQueue, now = get();
+        if (now == want)
+            return;
+        set(want);
+        fprintf(stderr, "GoSRecomp: frame queue %d -> %d (now %d)\n", now, want, get());
+    }
+
     // First frame: the window mode and size (the frame settings follow the
     // game's own calls).
     void ApplyDisplaySettings()
     {
+        ApplyFrameQueue();
         static bool done = false;
         if (done)
             return;
@@ -178,7 +233,7 @@ namespace recomp
             if (mode == 3)  // a window a bit smaller than the screen
                 width = width * 3 / 4, height = height * 3 / 4;
         }
-        fprintf(stderr, "GoSRecomp: display %dx%d mode %d\n", width, height, mode);
-        set(width, height, mode, 0);
+        fprintf(stderr, "GoSRecomp: display %dx%d mode %d refresh %d\n", width, height, mode, s.refresh);
+        set(width, height, mode, s.refresh);
     }
 }
