@@ -1919,6 +1919,33 @@ namespace recomp
         }
     }
 
+    // The quest whose clear unlocks a story (StoryEvent.conditionId ->
+    // StoryCondition.questId), 0 when there is none.
+    int StoryConditionQuest(int storyId)
+    {
+        static std::unordered_map<int, int> known;
+        auto it = known.find(storyId);
+        if (it != known.end())
+            return it->second;
+        try
+        {
+            int condition = 0, quest = 0;
+            for (const auto& row : TableRows("StoryEvent"))
+                if (row.first == storyId)
+                    condition = *reinterpret_cast<const int32_t*>(reinterpret_cast<const uint8_t*>(row.second) + 0x38);  // conditionId
+            if (condition)
+                for (const auto& row : TableRows("StoryCondition"))
+                    if (row.first == condition)
+                        quest = *reinterpret_cast<const int32_t*>(reinterpret_cast<const uint8_t*>(row.second) + 0x20);  // questId
+            fprintf(stderr, "GoSRecomp: story %d needs condition %d, quest %d\n", storyId, condition, quest);
+            return known[storyId] = quest;
+        }
+        catch (const Failure&)
+        {
+            return 0;  // tables not loaded yet: asked again later
+        }
+    }
+
     // Battle toggles are settings; everything else writes the save.
     bool DebugActionChangesSave(size_t i) { return !Buttons()[i].immediate; }
 

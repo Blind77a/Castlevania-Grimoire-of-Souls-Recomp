@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <cwctype>
 #include <filesystem>
 #include <map>
 #include <string>
@@ -55,6 +56,7 @@ namespace recomp
     std::string GiveDebugItem(size_t i);
     bool DebugItemIsSingle(size_t i);
     bool SaveGameNow();
+    int StoryConditionQuest(int storyId);
 
     namespace
     {
@@ -402,7 +404,28 @@ namespace recomp
             }
         }
 
-        // Does not return when it works: the game ends.
+        // Starts the game again (same program and arguments as now, from its
+        // folder, as Play.bat does) and ends this one. Does not return.
+        void RestartGame(const std::string& why)
+        {
+            wchar_t exe[MAX_PATH * 4];
+            DWORD len = GetModuleFileNameW(nullptr, exe, DWORD(std::size(exe)));
+            std::wstring folder = fs::path(std::wstring(exe, len)).parent_path().wstring();
+            std::wstring cmd = GetCommandLineW();
+            STARTUPINFOW si{ sizeof(si) };
+            PROCESS_INFORMATION pi{};
+            bool started = CreateProcessW(exe, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, folder.c_str(), &si, &pi) != 0;
+            if (started)
+            {
+                CloseHandle(pi.hThread);
+                CloseHandle(pi.hProcess);
+            }
+            fprintf(stderr, "GoSRecomp: %s; %s\n", why.c_str(), started ? "restarting the game" : "closing the game (start it again)");
+            fflush(stderr);
+            TerminateProcess(GetCurrentProcess(), 0);
+        }
+
+        // Does not return when it works: the game restarts.
         std::string Restore(const fs::path& backup)
         {
             try
@@ -418,24 +441,7 @@ namespace recomp
                     }
                 if (!copied)
                     return "That backup has no files";
-                // start the game again (same program and arguments as now,
-                // from its folder, as Play.bat does), then end this one
-                wchar_t exe[MAX_PATH * 4];
-                DWORD len = GetModuleFileNameW(nullptr, exe, DWORD(std::size(exe)));
-                std::wstring folder = fs::path(std::wstring(exe, len)).parent_path().wstring();
-                std::wstring cmd = GetCommandLineW();
-                STARTUPINFOW si{ sizeof(si) };
-                PROCESS_INFORMATION pi{};
-                bool started = CreateProcessW(exe, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, folder.c_str(), &si, &pi) != 0;
-                if (started)
-                {
-                    CloseHandle(pi.hThread);
-                    CloseHandle(pi.hProcess);
-                }
-                fprintf(stderr, "GoSRecomp: save restored from %s (%d files); %s\n", BackupName(backup).c_str(), copied,
-                        started ? "restarting the game" : "closing the game (start it again)");
-                fflush(stderr);
-                TerminateProcess(GetCurrentProcess(), 0);
+                RestartGame("save restored from " + BackupName(backup) + " (" + std::to_string(copied) + " files)");
             }
             catch (const std::exception& e)
             {
@@ -448,9 +454,65 @@ namespace recomp
             return "";
         }
 
+        // [game] auto_backup (on unless 0): a backup each time the game
+        // starts, marked "auto"; the newest 10 of those are kept.
+        constexpr size_t kAutoBackupsKept = 10;
+
+        void AutoBackupAtStart()
+        {
+            static bool done = false;
+            if (done)
+                return;
+            try
+            {
+                SaveFolder();  // known once the engine is up; until then, try again next frame
+            }
+            catch (const Failure&)
+            {
+                return;
+            }
+            done = true;
+            wchar_t exe[MAX_PATH * 4];
+            DWORD len = GetModuleFileNameW(nullptr, exe, DWORD(std::size(exe)));
+            std::wstring ini = fs::path(std::wstring(exe, len)).parent_path().wstring() + L"\\gosr.ini";
+            if (!GetPrivateProfileIntW(L"game", L"auto_backup", 1, ini.c_str()))
+                return;
+            try
+            {
+                fs::path save = SaveFolder();
+                bool any = false;
+                for (const auto& e : fs::directory_iterator(save))
+                    any |= e.is_regular_file();
+                if (!any)
+                    return;  // no save yet
+                MakeBackup(L" auto");
+                size_t autos = 0;
+                for (const fs::path& b : Backups())  // newest first
+                {
+                    std::wstring name = b.filename().wstring();
+                    if (name.size() < 5 || name.compare(name.size() - 5, 5, L" auto") != 0)
+                        continue;
+                    if (++autos > kAutoBackupsKept)
+                        fs::remove_all(b);
+                }
+            }
+            catch (const std::exception& e)
+            {
+                fprintf(stderr, "GoSRecomp: automatic save backup failed: %s\n", e.what());
+            }
+            catch (const Failure& f)
+            {
+                fprintf(stderr, "GoSRecomp: automatic save backup failed: %s\n", f.what.c_str());
+            }
+        }
+
         // -------------------------------------------------------------- model
 
-        enum class RowKind { Action, Amount, Category, Item, Give, Accept, Close, PageLink, Yes, No, Backup, Restore, Auto };
+        enum class RowKind
+        {
+            Action, Amount, Category, Item, Give, Accept, Close, PageLink, Yes, No, Backup, Restore, Auto, Setting, Restart,
+            Achievement
+        };
 
         // ------------------------------------------------------- auto input
         //
@@ -529,6 +591,137 @@ namespace recomp
         }
 
         bool IsValue(RowKind k) { return k == RowKind::Amount || k == RowKind::Category || k == RowKind::Item; }
+        // ------------------------------------------------------------ settings
+        //
+        // gosr.ini values the menu can switch. They are read when the game
+        // starts, so they take effect after a restart (the Restart now row).
+
+        struct SettingOption
+        {
+            const wchar_t* value;  // as written in gosr.ini ("" = the line left empty)
+            const char* text;
+        };
+        struct Setting
+        {
+            const wchar_t* section;
+            const wchar_t* key;
+            const char* label;
+            std::vector<SettingOption> options;  // the first is what an empty or unknown value means
+        };
+
+        const std::vector<Setting>& Settings()
+        {
+            static const std::vector<Setting> settings = {
+                { L"display", L"mode", "Window mode", { { L"", "as last time" }, { L"fullscreen", "fullscreen" }, { L"borderless", "borderless" }, { L"windowed", "windowed" } } },
+                { L"display", L"refresh", "Refresh rate", { { L"", "desktop's" }, { L"60", "60 Hz" }, { L"120", "120 Hz" } } },
+                { L"display", L"vsync", "V-Sync", { { L"", "automatic" }, { L"1", "on" }, { L"0", "off" } } },
+                { L"display", L"frame_queue", "Frame queue", { { L"", "Unity's (2)" }, { L"1", "1 (snappier)" }, { L"2", "2" }, { L"3", "3" } } },
+                { L"game", L"skip_intro", "Startup logos", { { L"1", "skipped" }, { L"0", "shown" } } },
+                { L"controller", L"dpad_move", "D-pad moves you", { { L"1", "yes" }, { L"0", "no" } } },
+                { L"game", L"auto_backup", "Backup at start", { { L"1", "on" }, { L"0", "off" } } },
+            };
+            return settings;
+        }
+
+        size_t SettingIndex(const Setting& s)
+        {
+            wchar_t value[64] = {};
+            GetPrivateProfileStringW(s.section, s.key, L"", value, DWORD(std::size(value)), IniPath().c_str());
+            std::wstring v(value);
+            while (!v.empty() && iswspace(v.back()))
+                v.pop_back();
+            for (auto& c : v)
+                c = wchar_t(towlower(c));
+            for (size_t i = 0; i < s.options.size(); i++)
+                if (v == s.options[i].value)
+                    return i;
+            return 0;
+        }
+
+        std::string SettingLabel(size_t i)
+        {
+            const Setting& s = Settings()[i];
+            return std::string(s.label) + ": " + s.options[SettingIndex(s)].text;
+        }
+
+        void CycleSetting(size_t i, int delta)
+        {
+            const Setting& s = Settings()[i];
+            size_t n = s.options.size();
+            size_t next = (SettingIndex(s) + n + size_t(delta + int(n))) % n;
+            WritePrivateProfileStringW(s.section, s.key, s.options[next].value, IniPath().c_str());
+        }
+
+        // ---------------------------------------------------------- achievements
+        //
+        // The game's 12 Game Center achievements (bsAchievement.AchievementId),
+        // decided as homeMain.CheckMissingAchievement does: a story scene seen
+        // (StoryEvent.Util.IsSeenStory), or every challenge cleared. Unlock
+        // dates are kept beside the save folder.
+
+        struct AchievementInfo
+        {
+            const char* name;
+            const char* how;
+            int story;  // 0: every challenge cleared
+        };
+        const AchievementInfo kAchievements[] = {
+            { "The tutorial", "Finish the tutorial.", 1200 },
+            { "Chapter I", "Finish the story of Chapter I.", 1499 },
+            { "Chapter II", "Finish the story of Chapter II.", 99005 },
+            { "Chapter III", "Finish the story of Chapter III.", 99006 },
+            { "Chapter IV", "Finish the story of Chapter IV.", 4499 },
+            { "Chapter V", "Finish the story of Chapter V.", 99008 },
+            { "Chapter VI", "Finish the story of Chapter VI.", 6499 },
+            { "Chapter VII", "Finish the story of Chapter VII.", 7499 },
+            { "Chapter VIII", "Finish the story of Chapter VIII.", 8499 },
+            { "Chapter IX", "Finish the story of Chapter IX.", 99010 },
+            { "Chapter X", "Finish the story of Chapter X.", 10499 },
+            { "Every challenge", "Clear every challenge quest.", 0 },
+        };
+        constexpr size_t kAchievementCount = std::size(kAchievements);
+
+        std::wstring AchievementFile()
+        {
+            fs::path save = SaveFolder();
+            return (save.parent_path() / (save.filename().wstring() + L" - GoSRecomp achievements.ini")).wstring();
+        }
+
+        // When it was unlocked ("" = not yet).
+        std::string UnlockedOn(size_t i)
+        {
+            try
+            {
+                wchar_t value[64] = {};
+                std::wstring key = L"a" + std::to_wstring(i + 1);
+                GetPrivateProfileStringW(L"achievements", key.c_str(), L"", value, DWORD(std::size(value)), AchievementFile().c_str());
+                return Narrow(value);
+            }
+            catch (const Failure&)
+            {
+                return "";
+            }
+        }
+
+        void RecordUnlock(size_t i)
+        {
+            std::time_t now = std::time(nullptr);
+            std::tm local{};
+            localtime_s(&local, &now);
+            wchar_t stamp[64];
+            wcsftime(stamp, 64, L"%Y-%m-%d %H:%M", &local);
+            std::wstring key = L"a" + std::to_wstring(i + 1);
+            WritePrivateProfileStringW(L"achievements", key.c_str(), stamp, AchievementFile().c_str());
+        }
+
+        size_t UnlockedCount()
+        {
+            size_t n = 0;
+            for (size_t i = 0; i < kAchievementCount; i++)
+                n += !UnlockedOn(i).empty();
+            return n;
+        }
+
         // ---- the item list by category ("Weapon: Name" -> Weapon), in list order
 
         struct Category
@@ -611,6 +804,11 @@ namespace recomp
                 after++;
             pages.insert(pages.begin() + after, Page{ "Give item", { { RowKind::Category }, { RowKind::Item }, { RowKind::Amount }, { RowKind::Give } } });
             pages.insert(pages.begin(), Page{ "Save backup", {}, true });
+            Page settings{ "Settings", {} };
+            for (size_t i = 0; i < Settings().size(); i++)
+                settings.rows.push_back({ RowKind::Setting, i });
+            settings.rows.push_back({ RowKind::Restart });
+            pages.insert(pages.begin() + 1, settings);
             LoadAutoInput();
             Page autoPage{ "Auto input", {} };
             for (size_t i = 0; i <= kAutoSpeedRow; i++)
@@ -632,12 +830,13 @@ namespace recomp
             Color rowColor{ 1, 1, 1, 1 }, barColor[3] = {};
             std::vector<Page> pages;
             bool hub = true;             // on the main page, which lists the pages
+            bool viewer = false;         // showing the achievements (from the game's menu), not the debug menu
             bool confirming = false;     // asking before a change to the save
             bool editing = false;        // left/right change the selected value (Amount, item)
             Row pending{ RowKind::Action };
             size_t pendingSel = 0;
             size_t page = 0, sel = 0, item = 0;
-            bool open = false, swallow = false;
+            bool open = false, swallow = false, justOpened = false;
             float timeScale = 1.0f;
             std::string message;
             std::vector<fs::path> backups;  // newest first, as listed on the Save backup page
@@ -687,6 +886,25 @@ namespace recomp
             return { 0, 1, 2 };
         }
 
+        // The achievements, six to a page.
+        std::vector<Page> AchievementPages()
+        {
+            std::vector<Page> pages;
+            for (size_t i = 0; i < kAchievementCount; i++)
+            {
+                if (i % 6 == 0)
+                    pages.push_back({ "Achievements", {} });
+                pages.back().rows.push_back({ RowKind::Achievement, i });
+            }
+            return pages;
+        }
+
+        // Greyed-out rows: an amount that does not apply, a locked achievement.
+        bool Greyed(const Row& r)
+        {
+            return AmountLocked(r.kind) || (r.kind == RowKind::Achievement && UnlockedOn(r.action).empty());
+        }
+
         Il2CppObject* Target(uint32_t handle) { return handle ? il2cpp_gchandle_get_target(handle) : nullptr; }
         uint32_t Keep(Il2CppObject* obj) { return il2cpp_gchandle_new(obj, false); }
 
@@ -712,6 +930,7 @@ namespace recomp
         void ActivateBar(int which);
         void ChangeValue(const Row& r, int delta);
         void Refresh();
+        void ShowToast(const std::string& text);
         void TurnPage(int delta);
         void Close();
 
@@ -955,9 +1174,15 @@ namespace recomp
             case RowKind::Accept: return "Use the debug menu";
             case RowKind::Close: return "Close";
             case RowKind::PageLink: return g.pages[r.action].title;
-            case RowKind::Yes: return g.pending.kind == RowKind::Restore ? "Yes, restore and restart" : "Yes";
+            case RowKind::Yes:
+                return g.pending.kind == RowKind::Restore ? "Yes, restore and restart"
+                       : g.pending.kind == RowKind::Restart ? "Yes, restart"
+                                                            : "Yes";
             case RowKind::No: return "No";
             case RowKind::Auto: return AutoLabel(r.action);
+            case RowKind::Setting: return SettingLabel(r.action);
+            case RowKind::Restart: return "Restart now to apply";
+            case RowKind::Achievement: return kAchievements[r.action].name;
             case RowKind::Backup: return "Back up now";
             case RowKind::Restore: return "Restore " + BackupName(g.backups[r.action]);
             }
@@ -967,6 +1192,8 @@ namespace recomp
         // What the pending change is called in the question.
         std::string PendingName()
         {
+            if (g.pending.kind == RowKind::Restart)
+                return "Restart the game now";
             if (g.pending.kind == RowKind::Restore)
                 return "Restore the backup from " + BackupName(g.backups[g.pending.action]);
             if (g.pending.kind == RowKind::Give)
@@ -993,7 +1220,8 @@ namespace recomp
             std::vector<int> bar = BarItems();
             g.sel = std::min(g.sel, rows.size() + bar.size() - 1);
 
-            std::string title = g.confirming && g.pending.kind == RowKind::Restore ? "Restore and restart?"
+            std::string title = g.confirming && g.pending.kind == RowKind::Restart   ? "Restart now?"
+                                : g.confirming && g.pending.kind == RowKind::Restore ? "Restore and restart?"
                                 : g.confirming                                   ? "Are you sure?"
                                 : g.hub                                          ? "Debug menu"
                                                                                  : g.pages[g.page].title;
@@ -1002,7 +1230,10 @@ namespace recomp
             Call(Target(g.title), "set_text", Str(title));
 
             std::string status = g.message;
-            if (g.confirming && g.pending.kind == RowKind::Restore)
+            if (g.confirming && g.pending.kind == RowKind::Restart)
+                status = "Restart the game now? Your save is written first, then the game closes and starts again "
+                         "with the new settings.    A: choose    B: no";
+            else if (g.confirming && g.pending.kind == RowKind::Restore)
                 status = PendingName() + "? Your current save is backed up first. Then the game closes and starts "
                                          "again by itself with the restored save.    A: choose    B: no";
             else if (g.editing)
@@ -1013,7 +1244,18 @@ namespace recomp
                                          "spoil the intended experience.    A: choose    B: no";
             else if (status.empty())
             {
-                if (g.hub && !DebugMenuWarned())
+                if (g.viewer)
+                {
+                    status = std::to_string(UnlockedCount()) + " of " + std::to_string(kAchievementCount) + " unlocked.";
+                    if (g.sel < rows.size() && rows[g.sel].kind == RowKind::Achievement)
+                    {
+                        size_t a = rows[g.sel].action;
+                        std::string on = UnlockedOn(a);
+                        status += "\n" + std::string(kAchievements[a].name) + ": " +
+                                  (on.empty() ? std::string(kAchievements[a].how) : "unlocked " + on + ".");
+                    }
+                }
+                else if (g.hub && !DebugMenuWarned())
                     status = "The debug menu changes your save immediately and its changes cannot be undone. Giving "
                              "yourself resources, unlocks or cleared quests skips the game's progression and can spoil "
                              "the intended experience. Back up your save first (Save backup).";
@@ -1021,6 +1263,9 @@ namespace recomp
                     status = "Always back up your save first (Save backup): changes cannot be undone.    A: open    B: close";
                 else if (g.pages[g.page].backups)
                     status = "Backups are kept beside the save folder, newest first.    A: use    B: back";
+                else if (g.pages[g.page].title == "Settings")
+                    status = "These apply when the game starts: change them, then Restart now (your save is written "
+                             "first). They are kept in gosr.ini.    A: change    B: back";
                 else if (g.pages[g.page].title == "Auto input")
                     status = "In battle, holding a button that is ON repeats it. Careful: some characters charge an attack "
                              "by holding the button (Maria, for one); with it ON they repeat instead of charging. "
@@ -1050,7 +1295,10 @@ namespace recomp
                     continue;
                 bool selected = size_t(i) == g.sel;
                 SetLabel(go, RowLabel(rows[size_t(i)], selected && g.editing));
-                if (AmountLocked(rows[size_t(i)].kind))  // greyed out, a little brighter under the cursor
+                // greyed rows do not react to the mouse (its hover would light them up)
+                bool live = !Greyed(rows[size_t(i)]);
+                Call(button, "set_interactable", &live);
+                if (!live)  // greyed out, a little brighter under the cursor
                 {
                     float v = selected ? 0.75f : 0.45f;
                     Highlight(button, Target(g.rowImages[i]), Color{ v, v, v, g.rowColor.a }, false);
@@ -1064,7 +1312,7 @@ namespace recomp
                     Highlight(button, Target(g.rowImages[i]), g.rowColor, selected, selected && g.editing);
             }
 
-            const char* labels[] = { "< LB", g.hub ? "Close" : "Back", "RB >" };
+            const char* labels[] = { "< LB", g.hub || g.viewer ? "Close" : "Back", "RB >" };
             for (int i = 0; i < 3; i++)
             {
                 Il2CppObject* button = Target(g.bar[i]);
@@ -1109,6 +1357,22 @@ namespace recomp
                 g.item = cat.first + size_t(((at + delta) % count + count) % count);
             }
             Sound("SelectGadget");
+        }
+
+        // In a battle scene (bsScene.ID.BATTLE), paused or not.
+        bool InBattleScene()
+        {
+            try
+            {
+                Il2CppObject* scenes = Singleton("bsSceneManager");
+                int32_t current = 0;
+                il2cpp_field_get_value(scenes, Field(il2cpp_object_get_class(scenes), "<Current>k__BackingField"), &current);
+                return current == 4;
+            }
+            catch (const Failure&)
+            {
+                return false;
+            }
         }
 
         // The gold and gem counts at the top of the screen (homeHeader) show
@@ -1180,7 +1444,7 @@ namespace recomp
                 Refresh();
                 return;
             }
-            if (g.hub)
+            if (g.hub || g.viewer)
             {
                 Close();
                 return;
@@ -1224,6 +1488,31 @@ namespace recomp
                 Sound(g.editing ? "Cancel" : "ButtonClick");  // A starts and ends changing it
                 g.editing = !g.editing;
                 break;
+            case RowKind::Setting:
+                CycleSetting(r.action, 1);
+                Sound("SelectGadget");
+                g.message = "Saved in gosr.ini. It applies after a restart (Restart now).";
+                break;
+            case RowKind::Restart:
+                if (InBattleScene())
+                {
+                    Sound("NG");
+                    g.message = "Leave the battle first: restarting now would lose it.";
+                    break;
+                }
+                Sound("ButtonClick");
+                g.confirming = true;
+                g.pending = r;
+                g.pendingSel = size_t(index);
+                g.sel = 1;  // the cursor starts on No
+                g.message.clear();
+                break;
+            case RowKind::Achievement:
+                if (UnlockedOn(r.action).empty())
+                    Sound("NG");  // locked: its line below says how
+                else
+                    ShowToast(std::string("Achievement unlocked: ") + kAchievements[r.action].name);  // the banner, again
+                break;
             case RowKind::Auto:
                 ToggleAuto(r.action);
                 Sound(r.action < kAutoSpeedRow ? (g_auto[r.action].on ? "CheckBoxOn" : "CheckBoxOff") : "SelectGadget");
@@ -1262,7 +1551,12 @@ namespace recomp
                 Sound("ButtonClick");
                 g.confirming = false;
                 g.sel = g.pendingSel;
-                if (g.pending.kind == RowKind::Restore)
+                if (g.pending.kind == RowKind::Restart)
+                {
+                    SaveGameNow();
+                    RestartGame("restarting for new settings");
+                }
+                else if (g.pending.kind == RowKind::Restore)
                     g.message = Restore(g.backups[g.pending.action]);  // the game ends when this works
                 else if (g.pending.kind == RowKind::Give)
                     g.message = DebugItemCount() ? GiveDebugItem(g.item % DebugItemCount()) : "No items";
@@ -1348,9 +1642,18 @@ namespace recomp
                 ReleaseAll();
                 Build();
             }
-            g.pages = BuildPages();
-            g.page = std::min(g.page, g.pages.size() - 1);
-            g.hub = true;  // it always opens on the main page
+            if (g.viewer)  // the achievements, from the game's menu
+            {
+                g.pages = AchievementPages();
+                g.page = 0;
+                g.hub = false;
+            }
+            else
+            {
+                g.pages = BuildPages();
+                g.page = std::min(g.page, g.pages.size() - 1);
+                g.hub = true;  // it always opens on the main page
+            }
             g.editing = g.confirming = false;
             g.sel = 0;
             g.message.clear();
@@ -1365,6 +1668,7 @@ namespace recomp
                 Call(events, "set_sendNavigationEvents", &off);
             }
             g.open = true;
+            g.justOpened = true;
             Refresh();
             Sound("DialogOpen");
             fprintf(stderr, "GoSRecomp: in-game debug menu opened\n");
@@ -1375,6 +1679,11 @@ namespace recomp
             g.open = false;
             g.swallow = true;
             Sound("DialogClose");
+            if (g.viewer)
+            {
+                g.viewer = false;
+                g.page = 0;  // the debug menu's own page, next time
+            }
             try
             {
                 if (Il2CppObject* root = Target(g.root); Alive(root))
@@ -1515,6 +1824,111 @@ namespace recomp
             return pid == GetCurrentProcessId();
         }
 
+        // ------------------------------------------------ achievement unlocks
+
+        // A banner at the top of the screen (the game dialog's title bar) for
+        // a few seconds when an achievement unlocks.
+        struct Toast
+        {
+            uint32_t root = 0, text = 0;
+            ULONGLONG hideAt = 0;
+        };
+        Toast g_toast;
+
+        void ShowToast(const std::string& text)
+        {
+            Il2CppObject* root = Target(g_toast.root);
+            if (!Alive(root))
+            {
+                if (g_toast.root)
+                    il2cpp_gchandle_free(g_toast.root), il2cpp_gchandle_free(g_toast.text), g_toast = {};
+                Il2CppObject* prefab = Call(Singleton("cmnPopupManager"), "get_m_dialog_prefab");
+                if (!prefab)
+                    throw Failure{ "the game's dialog is not loaded yet" };
+                root = NewObject("GosrAchievementToast", nullptr);
+                SetActive(root, false);
+                CallStatic(AnyClass("UnityEngine", "Object"), "DontDestroyOnLoad", root);
+                Il2CppObject* canvas = AddComponent(root, AnyClass("UnityEngine", "Canvas"));
+                int32_t overlay = 0, order = 32001;
+                Call(canvas, "set_renderMode", &overlay);
+                Call(canvas, "set_sortingOrder", &order);
+                Il2CppObject* scaler = AddComponent(root, AnyClass("UnityEngine.UI", "CanvasScaler"));
+                int32_t scaleWithScreen = 1;
+                Vec2 reference{ 1024, 576 };
+                float match = 0.5f;
+                Call(scaler, "set_uiScaleMode", &scaleWithScreen);
+                Call(scaler, "set_referenceResolution", &reference);
+                Call(scaler, "set_matchWidthOrHeight", &match);
+                Il2CppObject* bar = Instantiate(GameObjectOf(Find(Call(prefab, "get_transform"), "dialog/title_win")), TransformOf(root));
+                Strip(TransformOf(bar), { "cmnUiTextManager", "cmnUiMLTextSupporter", "LayoutElement", "HorizontalLayoutGroup" });
+                Place(TransformOf(bar), { 0.5f, 1 }, { 0.5f, 1 }, { 0.5f, 1 }, { 0, -18 }, { 560, 50 });
+                Il2CppObject* label = TextIn(bar);
+                FitText(label);
+                g_toast.root = Keep(root);
+                g_toast.text = Keep(label);
+            }
+            Call(Target(g_toast.text), "set_text", Str(text));
+            SetActive(root, true);
+            g_toast.hideAt = GetTickCount64() + 4500;
+            Sound("Claim");
+        }
+
+        void ToastFrame()
+        {
+            if (!g_toast.hideAt || GetTickCount64() < g_toast.hideAt)
+                return;
+            g_toast.hideAt = 0;
+            if (Il2CppObject* root = Target(g_toast.root); Alive(root))
+                SetActive(root, false);
+        }
+
+        // Every 2 seconds with a save loaded: the conditions of the locked
+        // achievements. Progress already made when a save loads is recorded
+        // without banners; what unlocks while playing gets one.
+        void AchievementFrame()
+        {
+            static int frame = 0;
+            if (++frame % 120 != 0)
+                return;
+            Il2CppObject* save = Call(Singleton("gdUser"), "get_saveData");
+            Il2CppObject* contents = save ? Call(save, "GetContents") : nullptr;
+            if (!contents)
+                return;
+            Il2CppObject* scenes = Singleton("bsSceneManager");
+            int32_t current = 0;
+            il2cpp_field_get_value(scenes, Field(il2cpp_object_get_class(scenes), "<Current>k__BackingField"), &current);
+            if (current != 3 && current != 4)  // home or battle
+                return;
+            static uintptr_t baselineFor = 0;
+            bool quiet = reinterpret_cast<uintptr_t>(contents) != baselineFor;
+            baselineFor = reinterpret_cast<uintptr_t>(contents);
+            static Il2CppClass* story = AnyClass("StoryEvent", "Util");
+            std::string unlocked;
+            for (size_t i = 0; i < kAchievementCount; i++)
+            {
+                if (!UnlockedOn(i).empty())
+                    continue;
+                // the game's test (the chapter's closing story seen), or the
+                // quest that story waits for cleared: a save can have the
+                // quest done without the story flagged (cleared another way)
+                int32_t id = kAchievements[i].story;
+                bool done = id ? Truth(CallStatic(story, "IsSeenStory", &id)) : Truth(Call(save, "IsClearedAllChallenge"));
+                if (!done && id)
+                {
+                    int32_t quest = StoryConditionQuest(id);
+                    done = quest && Truth(Call(save, "IsClearedQuest", &quest));
+                }
+                if (!done)
+                    continue;
+                RecordUnlock(i);
+                fprintf(stderr, "GoSRecomp: achievement unlocked: %s%s\n", kAchievements[i].name, quiet ? " (earlier progress)" : "");
+                if (!quiet)
+                    unlocked += (unlocked.empty() ? "" : ", ") + std::string(kAchievements[i].name);
+            }
+            if (!unlocked.empty())
+                ShowToast("Achievement unlocked: " + unlocked);
+        }
+
         void Frame()
         {
             Joystick j = GetJoystick();
@@ -1522,6 +1936,13 @@ namespace recomp
             il2cpp_field_get_value(j.obj, j.flags, &raw);
             static int32_t last = 0;
             int32_t pressed = raw & ~last;
+            if (g.open && g.justOpened)
+            {
+                // the press that opened it (A on the game's Achievements
+                // button) must not also press the first row
+                pressed = 0;
+                g.justOpened = false;
+            }
             last = raw;
 
             static bool keyWas = false;
@@ -1531,6 +1952,8 @@ namespace recomp
             int sticks = Bit(BUTTON_L3) | Bit(BUTTON_R3);
             if ((raw & sticks) == sticks && (pressed & sticks))
                 toggle = true;
+            if (!DebugMenuEnabled() && !g.open)
+                toggle = false;
 
             if (!g.open)
             {
@@ -1621,7 +2044,24 @@ namespace recomp
     {
         if (!il2cpp_domain_get())
             return;
-        if (!DebugMenuEnabled())  // auto input still applies (set it with window=1 off, or in gosr.ini)
+        AutoBackupAtStart();
+        try
+        {
+            AchievementFrame();
+            ToastFrame();
+        }
+        catch (const Failure& f)
+        {
+            static std::string lastError;
+            if (lastError != f.what)
+            {
+                lastError = f.what;
+                fprintf(stderr, "GoSRecomp: achievements: %s\n", f.what.c_str());
+            }
+        }
+        // without the debug menu, auto input still applies, and the
+        // achievements list (opened from the game's menu) still runs
+        if (!DebugMenuEnabled() && !g.open)
         {
             try
             {
@@ -1658,6 +2098,23 @@ namespace recomp
                     g.open = false;
                 }
             }
+        }
+    }
+
+    // The Achievements button in the game's menu (menu_quit.cpp).
+    void OpenAchievements()
+    {
+        if (g.open)
+            return;
+        try
+        {
+            g.viewer = true;
+            Open();
+        }
+        catch (const Failure& f)
+        {
+            g.viewer = false;
+            fprintf(stderr, "GoSRecomp: achievements could not be shown (%s)\n", f.what.c_str());
         }
     }
 }

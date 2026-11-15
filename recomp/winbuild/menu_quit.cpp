@@ -4,10 +4,12 @@
 // (string ids 8, 9, 10 and 11) and, on yes, calls Application.Quit. This button
 // saves first, then opens that same dialog with the title screen's own yes/no
 // callback, so confirming leaves the game the same way.
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "il2cpp-api.h"
 #include "il2cpp-class-internals.h"
@@ -18,6 +20,8 @@
 
 namespace recomp
 {
+    void OpenAchievements();  // ingame_menu.cpp
+
     namespace
     {
         struct Failure
@@ -271,16 +275,36 @@ namespace recomp
             return 0;
         }
 
-        Il2CppObject* MakeClickAction(Il2CppObject* target, Il2CppClass* actionClass)
+        using ClickHandler = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+
+        uint64_t OnAchievementsClicked(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t)
         {
-            static MethodInfo click{};
-            static bool ready = false;
-            if (!ready)
+            static uint64_t lastTick = 0;
+            uint64_t now = GetTickCount64();
+            if (now - lastTick < 600)
+                return 0;
+            lastTick = now;
+            try
+            {
+                Call(Singleton("outSoundManager"), "ButtonClick");
+            }
+            catch (const Failure&)
+            {
+            }
+            recomp::OpenAchievements();
+            return 0;
+        }
+
+        Il2CppObject* MakeClickAction(Il2CppObject* target, Il2CppClass* actionClass, ClickHandler handler = OnQuitClicked)
+        {
+            // one method record per handler, from any parameterless instance method
+            static MethodInfo quit{}, achievements{};
+            MethodInfo& click = handler == OnQuitClicked ? quit : achievements;
+            if (!click.methodPointer)
             {
                 const MethodInfo* sample = Method(Class("Assembly-CSharp.dll", "", "outMenuTop"), "<OnCreateTitleButton>b__47_0", 0);
                 click = *sample;
-                click.methodPointer = reinterpret_cast<Il2CppMethodPointer>(OnQuitClicked);
-                ready = true;
+                click.methodPointer = reinterpret_cast<Il2CppMethodPointer>(handler);
             }
             Il2CppObject* action = il2cpp_object_new(actionClass);
             intptr_t methodBits = reinterpret_cast<intptr_t>(&click);
@@ -486,10 +510,244 @@ namespace recomp
                 throw;
             }
         }
+
+        // The menu's objects, kept for the check every frame (MenuFrame).
+        struct MenuObjects
+        {
+            uint32_t menu = 0, section = 0, button = 0, scroll = 0, screen = 0;
+        };
+        MenuObjects g_menu;
+        ULONGLONG g_keepFocusUntil = 0;  // the menu just opened: Achievements keeps the cursor
+
+        Il2CppObject* Held(uint32_t h) { return h ? il2cpp_gchandle_get_target(h) : nullptr; }
+
+        void Remember(Il2CppObject* menu, Il2CppObject* section, Il2CppObject* button, Il2CppObject* content, Il2CppObject* root)
+        {
+            if (Held(g_menu.menu) == menu && Held(g_menu.button) == button)
+                return;
+            for (uint32_t* h : { &g_menu.menu, &g_menu.section, &g_menu.button, &g_menu.scroll, &g_menu.screen })
+                if (*h)
+                    il2cpp_gchandle_free(*h), *h = 0;
+            g_menu.menu = il2cpp_gchandle_new(menu, false);
+            g_menu.section = il2cpp_gchandle_new(section, false);
+            g_menu.button = il2cpp_gchandle_new(button, false);
+            if (Il2CppObject* view = Call(root, "Find", NewString("list/contents/Table View00")))
+                if (Il2CppObject* scroll = GetComponent(Call(view, "get_gameObject"), Class("UnityEngine.UI.dll", "UnityEngine.UI", "ScrollRect")))
+                    g_menu.scroll = il2cpp_gchandle_new(scroll, false);
+            if (Il2CppObject* screen = Call(content, "Find", NewString("menu_parts2/btn_set/Button01")))
+                g_menu.screen = il2cpp_gchandle_new(Call(screen, "get_gameObject"), false);
+        }
+
+        void ShowAchievementsButton(Il2CppObject* menu);
+        void FocusAchievements(Il2CppObject* menu, Il2CppObject* buttonObject);
+
+        // Every frame while the menu is open: the section shown again the
+        // moment the menu hides it (it does on each opening), the cursor
+        // taken back from Screen once when the menu puts it there as it
+        // finishes opening, and the list scrolled to the very top whenever
+        // Achievements is selected (the heading above it too).
+        void MenuFrame()
+        {
+            Il2CppObject* menu = Held(g_menu.menu);
+            if (!menu)
+                return;
+            try
+            {
+                if (!Truth(Call(Call(menu, "get_gameObject"), "get_activeInHierarchy")))
+                    return;  // closed
+                if (!Truth(Call(Held(g_menu.section), "get_activeSelf")))
+                {
+                    ShowAchievementsButton(menu);  // just reopened
+                    return;
+                }
+                Il2CppObject* events = CallStatic(Class("UnityEngine.UI.dll", "UnityEngine.EventSystems", "EventSystem"), "get_current");
+                Il2CppObject* selected = events ? Call(events, "get_currentSelectedGameObject") : nullptr;
+                Il2CppObject* button = Held(g_menu.button);
+                if (g_keepFocusUntil)
+                {
+                    if (GetTickCount64() > g_keepFocusUntil)
+                        g_keepFocusUntil = 0;
+                    else if (selected && selected == Held(g_menu.screen))
+                    {
+                        g_keepFocusUntil = 0;
+                        FocusAchievements(menu, button);
+                        selected = button;
+                    }
+                }
+                if (selected && selected == button)
+                    if (Il2CppObject* scroll = Held(g_menu.scroll))
+                    {
+                        float at = *static_cast<float*>(il2cpp_object_unbox(Call(scroll, "get_verticalNormalizedPosition")));
+                        if (at < 0.999f)
+                        {
+                            float top = 1.0f;
+                            Call(scroll, "set_verticalNormalizedPosition", &top);
+                        }
+                    }
+            }
+            catch (const Failure&)
+            {
+                for (uint32_t* h : { &g_menu.menu, &g_menu.section, &g_menu.button, &g_menu.scroll, &g_menu.screen })
+                    if (*h)
+                        il2cpp_gchandle_free(*h), *h = 0;
+            }
+        }
+
+        // The menu opens with its cursor on Achievements, the top button:
+        // selected, the game's cursor frame moved there, and made the
+        // menu's starting button in its cursor selector.
+        void FocusAchievements(Il2CppObject* menu, Il2CppObject* buttonObject)
+        {
+            try
+            {
+                Il2CppClass* events = Class("UnityEngine.UI.dll", "UnityEngine.EventSystems", "EventSystem");
+                if (Il2CppObject* current = CallStatic(events, "get_current"))
+                    Call(current, "SetSelectedGameObject", buttonObject);
+                Il2CppClass* menuClass = il2cpp_object_get_class(menu);
+                FieldInfo* selectorField = il2cpp_class_get_field_from_name(menuClass, "m_cmnCursorSelectorScr");
+                FieldInfo* indexField = il2cpp_class_get_field_from_name(menuClass, "m_registIndex");
+                Il2CppObject* selector = nullptr;
+                int32_t index = -1;
+                if (selectorField)
+                    il2cpp_field_get_value(menu, selectorField, &selector);
+                if (indexField)
+                    il2cpp_field_get_value(menu, indexField, &index);
+                if (!selector)
+                    return;
+                // The menu set up its scrolling and registered its buttons
+                // with the cursor selector while the section was hidden: do
+                // both again, so Achievements is one of them (the first) and
+                // scrolling counts the section.
+                try
+                {
+                    Call(menu, "CreateScroll");
+                }
+                catch (const Failure& f)
+                {
+                    fprintf(stderr, "GoSRecomp: menu scroll not set up again (%s)\n", f.what.c_str());
+                }
+                if (index >= 0)
+                {
+                    const MethodInfo* add = Method(il2cpp_object_get_class(selector), "AddFocusCursorObject", 5);
+                    bool clear = true, shown = true;
+                    void* args[] = { Call(menu, "get_transform"), &clear, Call(buttonObject, "get_transform"), &shown, &index };
+                    Invoke(add, selector, args);
+                }
+                if (Il2CppObject* current = CallStatic(events, "get_current"))
+                    Call(current, "SetSelectedGameObject", buttonObject);
+                Call(selector, "SetCursorTargetWorldPositionDirect", buttonObject);
+                FieldInfo* defaults = il2cpp_class_get_field_from_name(il2cpp_object_get_class(selector), "m_defaultEventSystemObject");
+                Il2CppArray* list = nullptr;
+                if (defaults)
+                    il2cpp_field_get_value(selector, defaults, &list);
+                if (list && index >= 0 && uint32_t(index) < il2cpp_array_length(list))
+                    reinterpret_cast<Il2CppObject**>(reinterpret_cast<uint8_t*>(list) + kIl2CppSizeOfArray)[index] = buttonObject;
+            }
+            catch (const Failure& f)
+            {
+                fprintf(stderr, "GoSRecomp: menu cursor not moved to Achievements (%s)\n", f.what.c_str());
+            }
+        }
+
+        // The menu's own Achievements button: the "User Information" section
+        // at the top (menu_parts1), which opened Game Center and is hidden
+        // where there is none. Shown again, opening the achievements list
+        // (ingame_menu.cpp) instead.
+        void ShowAchievementsButton(Il2CppObject* menu)
+        {
+            if (!Truth(Call(Call(menu, "get_gameObject"), "get_activeInHierarchy")))
+                return;
+            Il2CppObject* root = Call(menu, "get_transform");
+            Il2CppObject* content = Call(root, "Find", NewString("list/contents/Table View00/Scroll Content"));
+            Il2CppObject* section = content ? Call(content, "Find", NewString("menu_parts1")) : nullptr;
+            // Button02 until wired, renamed GosrAchievements after
+            Il2CppObject* buttonT = section ? Call(section, "Find", NewString("btn_set/GosrAchievements")) : nullptr;
+            if (!buttonT && section)
+                buttonT = Call(section, "Find", NewString("btn_set/Button02"));
+            if (!buttonT)
+                return;
+            // the section, its heading, the button row and the button: the
+            // menu hides some of them again when it reopens
+            Il2CppObject* buttonObject = Call(buttonT, "get_gameObject");
+            const char* parts[] = { "", "headingtext", "line", "btn_set", "button" };
+            std::string reshown;
+            for (const char* part : parts)
+            {
+                Il2CppObject* t = !*part ? section : !strcmp(part, "button") ? buttonT : Call(section, "Find", NewString(part));
+                if (!t)
+                    continue;
+                Il2CppObject* go = Call(t, "get_gameObject");
+                if (Truth(Call(go, "get_activeSelf")))
+                    continue;
+                bool on = true;
+                Call(go, "SetActive", &on);
+                reshown += std::string(reshown.empty() ? "" : ", ") + (*part ? part : "menu_parts1");
+            }
+            if (!reshown.empty())
+            {
+                static int logged = 0;
+                if (logged++ < 6)
+                    fprintf(stderr, "GoSRecomp: the menu hid its Achievements section (%s); shown again\n", reshown.c_str());
+                if (Il2CppClass* rebuilder = Class("UnityEngine.UI.dll", "UnityEngine.UI", "LayoutRebuilder"))
+                    CallStatic(rebuilder, "ForceRebuildLayoutImmediate", content);
+                // the menu scrolls to its first shown section as it opens:
+                // back to the top, where this one is
+                if (Il2CppObject* view = Call(root, "Find", NewString("list/contents/Table View00")))
+                    if (Il2CppObject* scroll = GetComponent(Call(view, "get_gameObject"), Class("UnityEngine.UI.dll", "UnityEngine.UI", "ScrollRect")))
+                    {
+                        float top = 1.0f;
+                        Call(scroll, "set_verticalNormalizedPosition", &top);
+                    }
+            }
+            // remembered for MenuFrame, which checks the menu every frame
+            Remember(menu, Call(section, "get_gameObject"), buttonObject, content, root);
+            if (!reshown.empty())
+                g_keepFocusUntil = GetTickCount64() + 2000;
+            if (NameIs(buttonObject, "GosrAchievements"))  // wired already
+            {
+                if (!reshown.empty())  // the menu just opened (and hid the section)
+                    FocusAchievements(menu, buttonObject);
+                if (reshown.empty())
+                    return;
+            }
+            Il2CppClass* buttonClass = Class("UnityEngine.UI.dll", "UnityEngine.UI", "Button");
+            Il2CppObject* button = GetComponent(buttonObject, buttonClass);
+            if (!button)
+                throw Failure{ "the Achievements button has no Button" };
+            Il2CppObject* click = Call(button, "get_onClick");
+            Call(click, "RemoveAllListeners");  // the Game Center one
+            const MethodInfo* add = Method(il2cpp_object_get_class(click), "AddListener", 1);
+            Il2CppClass* actionClass = il2cpp_class_from_type(add->parameters[0].parameter_type);
+            Call(click, "AddListener", MakeClickAction(menu, actionClass, OnAchievementsClicked));
+            Call(buttonObject, "set_name", NewString("GosrAchievements"));
+
+            // controller: up from the first Settings button reaches it
+            if (Il2CppObject* screenT = Call(content, "Find", NewString("menu_parts2/btn_set/Button01")))
+                if (Il2CppObject* screen = GetComponent(Call(screenT, "get_gameObject"), buttonClass))
+                {
+                    auto* screenNav = static_cast<Nav*>(il2cpp_object_unbox(Call(screen, "get_navigation")));
+                    if (screenNav->mode == 4)
+                    {
+                        Nav below = *screenNav;
+                        Nav mine = *static_cast<Nav*>(il2cpp_object_unbox(Call(button, "get_navigation")));
+                        mine.mode = 4;
+                        mine.down = screen;
+                        mine.up = mine.left = mine.right = nullptr;
+                        below.up = button;
+                        Call(screen, "set_navigation", &below);
+                        Call(button, "set_navigation", &mine);
+                    }
+                }
+            if (Il2CppClass* rebuilder = Class("UnityEngine.UI.dll", "UnityEngine.UI", "LayoutRebuilder"))
+                CallStatic(rebuilder, "ForceRebuildLayoutImmediate", content);
+            FocusAchievements(menu, buttonObject);
+            fprintf(stderr, "GoSRecomp: the menu's Achievements section is shown, opening the achievements list\n");
+        }
     }
 
     void EnsureMenuQuitButton()
     {
+        MenuFrame();
         static int frame = 0;
         if (++frame % 8 != 0)
             return;
@@ -499,14 +757,51 @@ namespace recomp
                 return;
             Il2CppClass* menuClass = Class("Assembly-CSharp.dll", "", "outMenuTop");
             Il2CppClass* objectClass = Class("UnityEngine.CoreModule.dll", "UnityEngine", "Object");
+            // the menus showing: from the game's screen cache (outUiManager.
+            // ui_cache), which also has the menu when it is opened again,
+            // and from FindObjectsOfType
+            std::vector<Il2CppObject*> menus;
+            try
+            {
+                Il2CppObject* manager = Singleton("outUiManager");
+                FieldInfo* cacheField = il2cpp_class_get_field_from_name(il2cpp_object_get_class(manager), "ui_cache");
+                Il2CppObject* dict = nullptr;
+                if (cacheField)
+                    il2cpp_field_get_value(manager, cacheField, &dict);
+                if (dict)
+                {
+                    Il2CppClass* dk = il2cpp_object_get_class(dict);
+                    Il2CppArray* entries = nullptr;
+                    int32_t count = 0;
+                    il2cpp_field_get_value(dict, il2cpp_class_get_field_from_name(dk, "entries"), &entries);
+                    il2cpp_field_get_value(dict, il2cpp_class_get_field_from_name(dk, "count"), &count);
+                    // Dictionary<string, ref>.Entry: hashCode, next, key, value
+                    struct Entry { int32_t hashCode, next; Il2CppObject* key; Il2CppObject* value; };
+                    if (entries && il2cpp_array_element_size(il2cpp_object_get_class(reinterpret_cast<Il2CppObject*>(entries))) == sizeof(Entry))
+                    {
+                        auto* e = reinterpret_cast<Entry*>(reinterpret_cast<uint8_t*>(entries) + kIl2CppSizeOfArray);
+                        for (int32_t i = 0; i < count && i < int32_t(il2cpp_array_length(entries)); i++)
+                            if (e[i].hashCode >= 0 && e[i].value && il2cpp_object_get_class(e[i].value) == menuClass)
+                                menus.push_back(e[i].value);
+                    }
+                }
+            }
+            catch (const Failure&)
+            {
+            }
             void* args[] = { TypeObject(menuClass) };
-            auto* found = reinterpret_cast<Il2CppArray*>(Invoke(Method(objectClass, "FindObjectsOfType", 1), nullptr, args));
-            if (!found)
-                return;
-            auto** items = reinterpret_cast<Il2CppObject**>(reinterpret_cast<uint8_t*>(found) + kIl2CppSizeOfArray);
-            for (size_t i = 0; i < il2cpp_array_length(found); i++)
-                if (items[i])
-                    AddQuitButton(items[i]);
+            if (auto* found = reinterpret_cast<Il2CppArray*>(Invoke(Method(objectClass, "FindObjectsOfType", 1), nullptr, args)))
+            {
+                auto** items = reinterpret_cast<Il2CppObject**>(reinterpret_cast<uint8_t*>(found) + kIl2CppSizeOfArray);
+                for (size_t i = 0; i < il2cpp_array_length(found); i++)
+                    if (items[i] && std::find(menus.begin(), menus.end(), items[i]) == menus.end())
+                        menus.push_back(items[i]);
+            }
+            for (Il2CppObject* menu : menus)
+            {
+                AddQuitButton(menu);
+                ShowAchievementsButton(menu);
+            }
         }
         catch (const Failure& f)
         {
