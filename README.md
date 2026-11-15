@@ -22,6 +22,7 @@ This fork adds the following on top of [BLSNCVS/Castlevania-Grimoire-of-Souls-Re
 - **Missing effects.** The dash, dodge and slide dust, enemy flame deaths and background flames show up again. Wall candles and torches keep their fire color and draw in front of the wall, and brazier flames sit in front of their stands.
 - **Chest glow and coins.** Opening a chest shows its golden flare again, and the coins dropped by defeated enemies render and bounce on screen.
 - **Falling rain.** Rainy stages such as level 1-3 in Chapter III show the rain coming down again, not only the splashes on the ground.
+- **Snappier controls (optional).** Two new `[display]` settings in `gosr.ini`: `frame_queue` sets how many frames the game prepares ahead of the screen, and `refresh` sets the monitor's refresh rate in exclusive fullscreen. Both are off unless you set them. See [Most responsive controls](#most-responsive-controls).
 
 ## What's in it
 
@@ -61,7 +62,7 @@ there. Leave a value empty to keep the game's own behavior.
 | Section | What |
 |---|---|
 | `[game]` | `language` for the very first start (empty follows your Windows language); after that, the game's options decide. `skip_intro=1` skips the Apple Arcade movie and the Konami logo; the title menu stays, and Continue is usable before the fade-in and logo shine |
-| `[display]` | `fps` (0 = no cap), `vsync` (empty: only where it gives 60 fps), `mode` (fullscreen, borderless, windowed), `width`, `height` |
+| `[display]` | `fps` (0 = no cap), `vsync` (empty: only where it gives 60 fps), `mode` (fullscreen, borderless, windowed), `width`, `height`, `refresh` (monitor Hz in exclusive fullscreen; empty: your desktop's rate), `frame_queue` (1-3 frames prepared ahead; empty: Unity's own, 2) |
 | `[controller]` | `layout=pc` (default), or `mac` for the tables the macOS build used. `dpad_move=0` stops the d-pad from moving your character. `xinput=0` if an Xbox controller misbehaves. `standard`: other controllers read by their standard buttons (1, default), for every controller (2) or off (0) |
 | `[effects]` | `flip_fix=1`: experimental fix for effects drawn upside down in some screens (off by default) |
 | `[mouse]` | `buttons=0` turns off mouse buttons in the keyboard options |
@@ -70,6 +71,23 @@ there. Leave a value empty to keep the game's own behavior.
 Bindings are set in the game's own Gamepad and Keyboard screens. Mouse buttons
 show up there as Mouse L / R / M / 4 / 5. If you customized your controller with
 an older build, press Default once.
+
+### Most responsive controls
+
+By default the game waits for the screen (V-Sync) and lets Unity prepare 2
+frames ahead, which can add up to about 33 ms between a button press and seeing
+it. For the snappiest combat, set these under `[display]`:
+
+| Setting | What it does |
+|---|---|
+| `mode=fullscreen` | Exclusive fullscreen skips the Windows desktop compositor. Needed for `refresh`. |
+| `refresh=60` | Runs the monitor at 60 Hz while the game is open (Windows puts your usual rate back when it closes). The game runs at 60 fps, so this paces frames evenly; on a 120 Hz screen it otherwise waits for every 2nd refresh. |
+| `vsync=0` | Doesn't wait for the screen. Lowest delay, but a tear line can show when the picture moves. |
+| `frame_queue=1` | Prepares only 1 frame ahead instead of 2: a press shows up to a frame (~16 ms) sooner. |
+
+All four together give the lowest delay. If walking through a level hitches
+or stutters, set `vsync=1` first (no tearing, still low delay at 60 Hz), then
+`frame_queue=2`. Leave `fps` empty: the game was made for 60 fps.
 
 ## Status
 
