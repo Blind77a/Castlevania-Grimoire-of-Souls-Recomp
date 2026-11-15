@@ -23,6 +23,9 @@ This fork adds the following on top of [BLSNCVS/Castlevania-Grimoire-of-Souls-Re
 - **Chest glow and coins.** Opening a chest shows its golden flare again, and the coins dropped by defeated enemies render and bounce on screen.
 - **Falling rain.** Rainy stages such as level 1-3 in Chapter III show the rain coming down again, not only the splashes on the ground.
 - **Snappier controls (optional).** Two new `[display]` settings in `gosr.ini`: `frame_queue` sets how many frames the game prepares ahead of the screen, and `refresh` sets the monitor's refresh rate in exclusive fullscreen. Both are off unless you set them. See [Most responsive controls](#most-responsive-controls).
+- **Debug menu in the game.** F8, or clicking both sticks (L3 + R3), opens the debug menu as one of the game's own dialogs: its frame, title bar, buttons, font and sounds, on top of any screen, also in exclusive fullscreen. It starts on a main page of sections, works with the controller (D-pad to move, A to use, B to go back, LB / RB to change section) or the mouse, and pauses the game while it is open. Every change to your save asks first and warns that it cannot be undone and can spoil the intended experience. Give item now goes by category, then item, then amount, and the gold and gem counts update right away. The old separate window is still there with `window=1` under `[debug]`.
+- **Save backup and restore.** The debug menu's Save backup section copies your save into a dated folder beside the save folder (`Castlevania_ Grimoire of Souls - GoSRecomp backups`) and lists the backups to restore. Restoring backs up your current save first, then restarts the game with the restored one.
+- **Auto input.** The debug menu's Auto input section makes attack, jump or sub-weapon repeat while you hold the button in battle, at 6, 10 or 15 presses a second. Characters that charge an attack by holding the button, Maria for one, repeat instead of charging while it is on. The choice is kept in `gosr.ini` (`auto_attack`, `auto_jump`, `auto_subweapon`, `auto_speed` under `[controller]`).
 
 ## What's in it
 
@@ -34,10 +37,12 @@ This fork adds the following on top of [BLSNCVS/Castlevania-Grimoire-of-Souls-Re
 - Frame rate cap, V-Sync, fullscreen / borderless / windowed and resolution in
   `gosr.ini`
 - Every language the game shipped with
-- A debug menu on F8: gold, gems, every item by name, unlock everything, open
-  every quest and banner, skip the tutorial, invincibility, damage multiplier.
-  It asks before the first use, because it changes your save for good and skips
-  the game's progression
+- A debug menu in the game, on F8 or L3 + R3, styled like the game's own
+  dialogs and driven by the controller: gold, gems, every item by name, unlock
+  everything, open every quest and banner, skip the tutorial, invincibility,
+  damage multiplier, save backup and restore, and auto attack / jump /
+  sub-weapon. It asks before every change to your save, because it changes it
+  for good and skips the game's progression
 
 ## Installing
 
@@ -63,10 +68,10 @@ there. Leave a value empty to keep the game's own behavior.
 |---|---|
 | `[game]` | `language` for the very first start (empty follows your Windows language); after that, the game's options decide. `skip_intro=1` skips the Apple Arcade movie and the Konami logo; the title menu stays, and Continue is usable before the fade-in and logo shine |
 | `[display]` | `fps` (0 = no cap), `vsync` (empty: only where it gives 60 fps), `mode` (fullscreen, borderless, windowed), `width`, `height`, `refresh` (monitor Hz in exclusive fullscreen; empty: your desktop's rate), `frame_queue` (1-3 frames prepared ahead; empty: Unity's own, 2) |
-| `[controller]` | `layout=pc` (default), or `mac` for the tables the macOS build used. `dpad_move=0` stops the d-pad from moving your character. `xinput=0` if an Xbox controller misbehaves. `standard`: other controllers read by their standard buttons (1, default), for every controller (2) or off (0) |
+| `[controller]` | `layout=pc` (default), or `mac` for the tables the macOS build used. `dpad_move=0` stops the d-pad from moving your character. `xinput=0` if an Xbox controller misbehaves. `standard`: other controllers read by their standard buttons (1, default), for every controller (2) or off (0). `auto_attack`, `auto_jump`, `auto_subweapon` (1 = holding the button repeats it in battle), `auto_speed` (6, 10 or 15 presses a second) |
 | `[effects]` | `flip_fix=1`: experimental fix for effects drawn upside down in some screens (off by default) |
 | `[mouse]` | `buttons=0` turns off mouse buttons in the keyboard options |
-| `[debug]` | `menu=0` turns off the debug menu, `hotkey` changes F8 |
+| `[debug]` | `menu=0` turns off the debug menu, `hotkey` changes F8 (L3 + R3 always opens it), `window=1` brings back the old separate window |
 
 Bindings are set in the game's own Gamepad and Keyboard screens. Mouse buttons
 show up there as Mouse L / R / M / 4 / 5. If you customized your controller with
