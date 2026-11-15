@@ -26,6 +26,9 @@ This fork adds the following on top of [BLSNCVS/Castlevania-Grimoire-of-Souls-Re
 - **Debug menu in the game.** F8, or clicking both sticks (L3 + R3), opens the debug menu as one of the game's own dialogs: its frame, title bar, buttons, font and sounds, on top of any screen, also in exclusive fullscreen. It starts on a main page of sections, works with the controller (D-pad to move, A to use, B to go back, LB / RB to change section) or the mouse, and pauses the game while it is open. Every change to your save asks first and warns that it cannot be undone and can spoil the intended experience. Give item now goes by category, then item, then amount, and the gold and gem counts update right away. The old separate window is still there with `window=1` under `[debug]`.
 - **Save backup and restore.** The debug menu's Save backup section copies your save into a dated folder beside the save folder (`Castlevania_ Grimoire of Souls - GoSRecomp backups`) and lists the backups to restore. Restoring backs up your current save first, then restarts the game with the restored one.
 - **Auto input.** The debug menu's Auto input section makes attack, jump or sub-weapon repeat while you hold the button in battle, at 6, 10 or 15 presses a second. Characters that charge an attack by holding the button, Maria for one, repeat instead of charging while it is on. The choice is kept in `gosr.ini` (`auto_attack`, `auto_jump`, `auto_subweapon`, `auto_speed` under `[controller]`).
+- **Settings in the debug menu.** A Settings section switches the window mode, refresh rate, V-Sync, frame queue, startup logos, d-pad movement and the backup at start, without editing `gosr.ini`. Restart now applies them: it writes your save first, then restarts the game (not during a battle).
+- **Automatic save backups.** Each start backs up your save into the backups folder, marked "auto". The newest 10 automatic backups are kept; your own are never removed. `auto_backup=0` under `[game]` turns it off.
+- **Achievements.** The game's 12 Game Center achievements (the tutorial, Chapters I to X and every challenge) work offline. They unlock as the game decides them, and also when a chapter's closing quest is cleared without its story scene marked as seen. An unlock shows a banner at the top of the screen in the game's style. The menu's own Achievements button, in its User Information section, which only showed with Game Center, is back at the top of the menu and lists them, greyed out until unlocked, with how to get each one. They are kept in `Castlevania_ Grimoire of Souls - GoSRecomp achievements.ini` beside the save folder.
 
 ## What's in it
 
@@ -40,9 +43,12 @@ This fork adds the following on top of [BLSNCVS/Castlevania-Grimoire-of-Souls-Re
 - A debug menu in the game, on F8 or L3 + R3, styled like the game's own
   dialogs and driven by the controller: gold, gems, every item by name, unlock
   everything, open every quest and banner, skip the tutorial, invincibility,
-  damage multiplier, save backup and restore, and auto attack / jump /
-  sub-weapon. It asks before every change to your save, because it changes it
-  for good and skips the game's progression
+  damage multiplier, save backup and restore, auto attack / jump /
+  sub-weapon, and the display and controller settings. It asks before every
+  change to your save, because it changes it for good and skips the game's
+  progression
+- Achievements, offline: the game's 12, in its own menu, with an unlock banner
+- An automatic backup of your save at every start (the newest 10 are kept)
 
 ## Installing
 
@@ -66,7 +72,7 @@ there. Leave a value empty to keep the game's own behavior.
 
 | Section | What |
 |---|---|
-| `[game]` | `language` for the very first start (empty follows your Windows language); after that, the game's options decide. `skip_intro=1` skips the Apple Arcade movie and the Konami logo; the title menu stays, and Continue is usable before the fade-in and logo shine |
+| `[game]` | `language` for the very first start (empty follows your Windows language); after that, the game's options decide. `skip_intro=1` skips the Apple Arcade movie and the Konami logo; the title menu stays, and Continue is usable before the fade-in and logo shine. `auto_backup=0` stops the save backup at each start (the newest 10 are kept) |
 | `[display]` | `fps` (0 = no cap), `vsync` (empty: only where it gives 60 fps), `mode` (fullscreen, borderless, windowed), `width`, `height`, `refresh` (monitor Hz in exclusive fullscreen; empty: your desktop's rate), `frame_queue` (1-3 frames prepared ahead; empty: Unity's own, 2) |
 | `[controller]` | `layout=pc` (default), or `mac` for the tables the macOS build used. `dpad_move=0` stops the d-pad from moving your character. `xinput=0` if an Xbox controller misbehaves. `standard`: other controllers read by their standard buttons (1, default), for every controller (2) or off (0). `auto_attack`, `auto_jump`, `auto_subweapon` (1 = holding the button repeats it in battle), `auto_speed` (6, 10 or 15 presses a second) |
 | `[effects]` | `flip_fix=1`: experimental fix for effects drawn upside down in some screens (off by default) |
