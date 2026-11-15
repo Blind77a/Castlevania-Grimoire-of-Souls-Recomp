@@ -834,7 +834,7 @@ namespace spfx::gl
             }
         }
 
-        // programs whose vertex shader takes particle quads already in world space
+        // programs whose vertex shader builds particle quads (world space or billboards)
         std::set<uint32_t> g_particlePrograms;
 
         void ApplyFixedFunction(State& s)
@@ -893,7 +893,8 @@ namespace spfx::gl
                 // follows GL unless GOSR_SPFX_NOCULL is set.
                 static const bool noCull = GetEnvironmentVariableW(L"GOSR_SPFX_NOCULL", nullptr, 0) != 0;
                 D3D11_CULL_MODE cull = D3D11_CULL_NONE;
-                // Particles (quads built in world space, the dash dust) are not culled:
+                // Particles (quads built in world space or as billboards: the dash
+                // dust, the chest flare) are not culled:
                 // they can come out wound the other way here (mirrored with the
                 // character) and vanished. Meshes keep culling: their back faces
                 // (fog planes) must stay hidden.
@@ -1101,7 +1102,10 @@ namespace spfx::gl
                 }
             }
         }
-        if (p.vertexSource.find("WorldP=vec4(IN_Position.xyz, 1.0);") != std::string::npos)
+        // Camera-facing billboards (the chest opening flare) flip their winding
+        // the same way and were culled too.
+        if (p.vertexSource.find("WorldP=vec4(IN_Position.xyz, 1.0);") != std::string::npos ||
+            p.vertexSource.find("BasePosition=mat3(g_VS_BillboardMatrix)") != std::string::npos)
             g_particlePrograms.insert(name);
         else
             g_particlePrograms.erase(name);
